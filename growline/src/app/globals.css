@@ -1,0 +1,538 @@
+@import "tailwindcss";
+
+/**
+ * Design System 3.1 — "Sunrise" (chosen by the owner 2026-08-28).
+ *
+ * Warm daylight: a cream ground, deep warm ink, and one burnt terracotta. Built
+ * for the situation this app is actually used in — a coach on a morning walk,
+ * outdoors, on a ₹10K screen — which is the case a dark theme serves worst.
+ *
+ * LIGHT IS NOW THE DEFAULT. v2 §4 made dark the default on the untested claim
+ * that this audience is "overwhelmingly on dark"; Sunrise is a light identity, so
+ * keeping dark in front would mean no coach ever sees the chosen design. Dark
+ * remains a real, fully-designed option for evening use — see the dark block.
+ *
+ * GLASS on a light ground works differently than on a dark one, and this is the
+ * part worth reading before editing any surface token. Over near-black, a
+ * translucent white pane is visibly LIGHTER than its ground, so an edge alone
+ * separates it. Over cream, a translucent white is barely distinguishable from
+ * the paper — so lift has to come from a soft warm SHADOW beneath the pane as
+ * well as the hairline around it. Same illusion, opposite instruments.
+ *
+ * Still no `backdrop-filter` (RULES G4): it re-samples everything behind every
+ * pane on every scroll frame, which is the jank a ₹10K Android cannot absorb.
+ * v2 §4 specified the cheap route — "alpha fills + hairline borders" — and the
+ * warm ambient wash on body::before gives the translucency something to reveal.
+ *
+ * Rules this file still enforces (RULES G1–G6):
+ *   G3  90% rule — one accent per screen. Terracotta is an EVENT, not wallpaper.
+ *   G4  No backdrop-filter blur, anywhere. Honoured, as above.
+ *   G5  Motion budget: micro 150–250ms, celebrations under 1.5s, everything
+ *       collapses under prefers-reduced-motion (bottom of this file).
+ */
+
+/* ── Sunrise: the default ─────────────────────────────────────────────────── */
+:root {
+  /* Warm paper, not white. A pure #fff under an orange accent reads clinical;
+     the cream is what makes the palette feel like daylight rather than a form. */
+  --bg: #fff9f2;
+
+  /*
+   * GLASS on paper. Panes are translucent WHITE over the cream, so they pick up
+   * the warmth beneath instead of sitting on it as flat white cards. `--glass-lift`
+   * is the top inner highlight; `--glass-shadow` is the soft warm drop that does
+   * the separating work on a light ground (see the header note).
+   */
+  --surface: rgba(255, 255, 255, 0.62);
+  --elevated: rgba(255, 255, 255, 0.88);
+  --hairline: rgba(42, 27, 16, 0.13);
+  --glass-line: rgba(255, 255, 255, 0.75);
+  --glass-lift: rgba(255, 255, 255, 0.9);
+  --glass-shadow: 0 2px 10px rgba(90, 52, 20, 0.07);
+
+  /* 15.9:1 on the cream — deep warm brown, never pure black, which would fight
+     the warmth of everything around it. */
+  --text: #2a1b10;
+  /* 5.6:1. The obvious #8a6f5c measured 4.45 and misses AA by a hair. */
+  --text-dim: #7a6050;
+
+  /*
+   * Burnt terracotta. The ramp is split by JOB, not just by lightness:
+   *   --accent-hi  the bright top of a gradient and the press highlight. Decorative,
+   *                carries no text, so it can be as loud as it likes.
+   *   --accent     the fill that CARRIES WHITE TEXT. 4.9:1 — measured. The mockup's
+   *                #e8590c was 3.58 and fails AA for a button label.
+   *   --accent-lo  the dark base a pressed button drops onto.
+   *   --accent-ink the accent as TEXT on the cream. 5.3:1.
+   */
+  --accent-hi: #e8590c;
+  --accent: #c4490a;
+  --accent-lo: #8f3406;
+  --on-accent: #ffffff;
+  --accent-ink: #b8420a;
+
+  /*
+   * Legacy aliases. Roughly two hundred class names across the app say `gold`
+   * (`bg-gold`, `text-on-gold`, `metal-gold`, `text-gold-ink`). Pointing those at
+   * the new accent switches every screen at once with no risk of a half-renamed
+   * component rendering an undefined colour. The names are now wrong and that is
+   * a real cost — the rename is its own mechanical commit, not something to
+   * attempt in the same change that redefines what the colour IS.
+   */
+  --gold-hi: var(--accent-hi);
+  --gold: var(--accent);
+  --gold-lo: var(--accent-lo);
+  --on-gold: var(--on-accent);
+  --gold-ink: var(--accent-ink);
+
+  /* Money, gains, target crossings. ONLY those. A deep green that reads as a
+     different signal from the terracotta rather than a warmer shade of it. */
+  --gem-green-bg: rgba(21, 128, 61, 0.10);
+  --gem-green-line: rgba(21, 128, 61, 0.32);
+  --gem-green-text: #15803d;
+
+  /* Milestone surprises only. Never routine UI. */
+  --gem-pink-bg: rgba(190, 24, 93, 0.09);
+  --gem-pink-line: rgba(190, 24, 93, 0.30);
+  --gem-pink-text: #be185d;
+
+  /* Elite tier and rare chrome. */
+  --platinum-hi: #ffffff;
+  --platinum: #e6e2dc;
+  --platinum-lo: #9a9088;
+
+  --heat: #c62828;
+  --info: #1d6fd8;
+
+  --chip-highlight: rgba(255, 255, 255, 0.85);
+
+  color-scheme: light;
+}
+
+/* ── Dark: the system preference, or an explicit choice ────────────────────── */
+/* Sunrise's night half. Not an inversion — the accent's ramp is reassigned by job
+   (see inside), because the stop that carries text on paper is not the stop that
+   carries it on near-black. The ground keeps a warm cast (#17120e, not a neutral
+   charcoal) so switching themes reads as the same product after dark. */
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) {
+    --bg: #17120e;
+    --surface: rgba(255, 255, 255, 0.055);
+    --elevated: rgba(255, 255, 255, 0.085);
+    --hairline: rgba(255, 244, 235, 0.14);
+    --glass-line: rgba(255, 255, 255, 0.10);
+    --glass-lift: rgba(255, 255, 255, 0.07);
+    --glass-shadow: 0 2px 12px rgba(0, 0, 0, 0.28);
+    --text: #fdf6ef;
+    --text-dim: #b2a094;
+    /* Inverted job assignment: on a dark ground the BRIGHT orange is the readable
+       one and carries near-black text, while the deep stop becomes the shadow. */
+    --accent-hi: #ffa25c;
+    --accent: #f2701c;
+    --accent-lo: #8f3406;
+    --on-accent: #1a0d04;
+    --accent-ink: #ff9147;
+    --gold-hi: var(--accent-hi);
+    --gold: var(--accent);
+    --gold-lo: var(--accent-lo);
+    --on-gold: var(--on-accent);
+    --gold-ink: var(--accent-ink);
+    --gem-green-bg: rgba(52, 211, 153, 0.13);
+    --gem-green-line: rgba(52, 211, 153, 0.40);
+    --gem-green-text: #34d399;
+    --gem-pink-bg: rgba(244, 114, 182, 0.14);
+    --gem-pink-line: rgba(244, 114, 182, 0.45);
+    --gem-pink-text: #f9a8d4;
+    --platinum-hi: #e8ebf0;
+    --platinum: #c3cad6;
+    --platinum-lo: #8e97a8;
+    --heat: #ff5a6b;
+    --info: #7aa2ff;
+    --chip-highlight: rgba(255, 255, 255, 0.14);
+    color-scheme: dark;
+  }
+}
+
+:root[data-theme="light"] {
+  /* Restated in full: an explicit light choice must beat a dark OS, and that only
+     holds if this block defines the whole set rather than relying on :root. */
+  --bg: #fff9f2;
+  --surface: rgba(255, 255, 255, 0.62);
+  --elevated: rgba(255, 255, 255, 0.88);
+  --hairline: rgba(42, 27, 16, 0.13);
+  --glass-line: rgba(255, 255, 255, 0.75);
+  --glass-lift: rgba(255, 255, 255, 0.9);
+  --glass-shadow: 0 2px 10px rgba(90, 52, 20, 0.07);
+  --text: #2a1b10;
+  --text-dim: #7a6050;
+  --accent-hi: #e8590c;
+  --accent: #c4490a;
+  --accent-lo: #8f3406;
+  --on-accent: #ffffff;
+  --accent-ink: #b8420a;
+  --gold-hi: var(--accent-hi);
+  --gold: var(--accent);
+  --gold-lo: var(--accent-lo);
+  --on-gold: var(--on-accent);
+  --gold-ink: var(--accent-ink);
+  --gem-green-bg: rgba(21, 128, 61, 0.10);
+  --gem-green-line: rgba(21, 128, 61, 0.32);
+  --gem-green-text: #15803d;
+  --gem-pink-bg: rgba(190, 24, 93, 0.09);
+  --gem-pink-line: rgba(190, 24, 93, 0.30);
+  --gem-pink-text: #be185d;
+  --platinum-hi: #ffffff;
+  --platinum: #e6e2dc;
+  --platinum-lo: #9a9088;
+  --heat: #c62828;
+  --info: #1d6fd8;
+  --chip-highlight: rgba(255, 255, 255, 0.85);
+  color-scheme: light;
+}
+
+/* Explicit dark always wins, including over a light system preference. */
+:root[data-theme="dark"] {
+  /* Same set as the media block above — the toggle has to win in both directions. */
+  --bg: #17120e;
+  --surface: rgba(255, 255, 255, 0.055);
+  --elevated: rgba(255, 255, 255, 0.085);
+  --hairline: rgba(255, 244, 235, 0.14);
+  --glass-line: rgba(255, 255, 255, 0.10);
+  --glass-lift: rgba(255, 255, 255, 0.07);
+  --glass-shadow: 0 2px 12px rgba(0, 0, 0, 0.28);
+  --text: #fdf6ef;
+  --text-dim: #b2a094;
+  --accent-hi: #ffa25c;
+  --accent: #f2701c;
+  --accent-lo: #8f3406;
+  --on-accent: #1a0d04;
+  --accent-ink: #ff9147;
+  --gold-hi: var(--accent-hi);
+  --gold: var(--accent);
+  --gold-lo: var(--accent-lo);
+  --on-gold: var(--on-accent);
+  --gold-ink: var(--accent-ink);
+  --gem-green-bg: rgba(52, 211, 153, 0.13);
+  --gem-green-line: rgba(52, 211, 153, 0.40);
+  --gem-green-text: #34d399;
+  --gem-pink-bg: rgba(244, 114, 182, 0.14);
+  --gem-pink-line: rgba(244, 114, 182, 0.45);
+  --gem-pink-text: #f9a8d4;
+  --platinum-hi: #e8ebf0;
+  --platinum: #c3cad6;
+  --platinum-lo: #8e97a8;
+  --heat: #ff5a6b;
+  --info: #7aa2ff;
+  --chip-highlight: rgba(255, 255, 255, 0.14);
+  color-scheme: dark;
+}
+
+@theme inline {
+  --color-bg: var(--bg);
+  --color-surface: var(--surface);
+  --color-elevated: var(--elevated);
+  --color-hairline: var(--hairline);
+  --color-text: var(--text);
+  --color-text-dim: var(--text-dim);
+  --color-gold: var(--gold);
+  --color-gold-hi: var(--gold-hi);
+  --color-gold-lo: var(--gold-lo);
+  --color-on-gold: var(--on-gold);
+  --color-gold-ink: var(--gold-ink);
+  --color-gem-green: var(--gem-green-text);
+  --color-gem-pink: var(--gem-pink-text);
+  --color-platinum: var(--platinum);
+  --color-heat: var(--heat);
+  --color-info: var(--info);
+
+  --font-sans: var(--font-inter), ui-rounded, "Segoe UI", Roboto, system-ui,
+    sans-serif;
+  /*
+   * Display and body are the SAME family now (Nunito), separated by weight rather
+   * than by typeface. The v2 spec called serif-over-sans "the cheapest single move
+   * that separates this from every template", and it was right about the effect —
+   * but it costs a second font download on a 3G connection, and Nunito's 800/900
+   * against its 400 carries the hierarchy on its own.
+   *
+   * Both variables resolve to the same family; `font-display` remains a distinct
+   * token so a future direction can split them again without touching components.
+   */
+  --font-display: var(--font-inter), ui-rounded, "Segoe UI", Roboto, sans-serif;
+}
+
+/**
+ * The ambient wash — what makes the glass read as glass.
+ *
+ * A translucent pane over a flat colour is just a lighter version of that
+ * colour; there has to be something BEHIND it worth revealing. These two very
+ * low-opacity radial pools (lime top-left, cool blue bottom-right) sit fixed
+ * behind every screen, so panes near them pick up a faint tint and panes away
+ * from them stay neutral — the same reason a real glass sheet looks different
+ * over a lamp than over a wall.
+ *
+ * `position: fixed` and `pointer-events: none`: it never scrolls, never
+ * intercepts a tap, and paints once instead of on every scroll frame — which is
+ * the whole reason this is a gradient and not `backdrop-filter` (G4).
+ */
+body::before {
+  content: "";
+  position: fixed;
+  inset: 0;
+  z-index: -1;
+  pointer-events: none;
+  background:
+    radial-gradient(72rem 52rem at 10% -10%, color-mix(in srgb, var(--accent-hi) 16%, transparent), transparent 60%),
+    radial-gradient(58rem 44rem at 108% 106%, color-mix(in srgb, var(--gem-pink-text) 11%, transparent), transparent 58%);
+}
+
+body {
+  background: var(--bg);
+  color: var(--text);
+  font-family: var(--font-sans);
+  font-size: 16px;
+  -webkit-tap-highlight-color: transparent;
+}
+
+/* ── Touch feel (v2 §4, the Dopamine Map's precondition) ────────────────────── */
+/**
+ * Every tap answers. The body sets -webkit-tap-highlight-color: transparent,
+ * which removes the browser's built-in grey flash — correct for a designed app,
+ * but only HALF of a decision: the replacement press state was applied to a
+ * handful of .neopop buttons and nothing else, so most of the app gave no
+ * feedback at all. Field-tested 2026-08-27 and called out in one sentence:
+ * "I'm not even able to feel that I clicked."
+ *
+ * The `scale` property, not `transform`: scale composes with the transform
+ * utilities Tailwind emits (a pressed element that is also translate-centred
+ * must not jump), and it is GPU-composited, so the press costs no layout on a
+ * cheap Android. 120ms in, spec budget is 150–250 for micro-interactions —
+ * a press must feel concurrent with the finger, so it sits just under.
+ *
+ * touch-action: manipulation removes the double-tap-to-zoom wait some Androids
+ * still impose before delivering a click — the other half of "feels slow".
+ */
+button,
+[role="button"],
+a,
+label,
+input,
+select,
+textarea,
+summary {
+  touch-action: manipulation;
+}
+
+button,
+[role="button"],
+a,
+summary {
+  transition: scale 120ms ease;
+}
+
+button:active:not(:disabled),
+[role="button"]:active,
+a:active,
+summary:active {
+  scale: 0.965;
+}
+
+/* The plate-shadow press is the .neopop button's own physics; a second, scaled
+   shrink on top of it would read as the button collapsing. */
+.neopop:active:not(:disabled) {
+  scale: 1;
+}
+
+/* ── Glass surfaces ─────────────────────────────────────────────────────────── */
+/**
+ * Tailwind's `bg-surface` / `bg-elevated` now resolve to translucent whites, so
+ * every existing card in the app became a glass pane the moment the tokens
+ * changed — no component edits. These utilities add the two details that turn a
+ * translucent rectangle into something that reads as a physical pane:
+ *
+ *   1. a hairline edge slightly brighter than the fill, so the pane HAS an edge
+ *   2. a 1px inner highlight along the top, which is how glass catches light
+ *
+ * Applied by element rather than by class, so the whole app gets it without
+ * touching two hundred files. Anything that opts out can set `border: none`.
+ */
+.bg-surface,
+.bg-elevated {
+  border: 1px solid var(--glass-line);
+  /* Two shadows doing two jobs: the inset highlight is the light catching the
+     pane's top edge, and the outer drop is what separates a near-white pane from
+     near-white paper. On the dark theme the drop is nearly invisible and the
+     hairline carries the separation instead — hence both, in both themes. */
+  box-shadow:
+    inset 0 1px 0 0 var(--glass-lift),
+    var(--glass-shadow);
+}
+
+/* An input is a hole in the glass, not another pane on top of it: darker than
+   its surroundings, so a tappable field never looks like a raised card. */
+input,
+textarea,
+select {
+  background-color: color-mix(in srgb, var(--bg) 55%, transparent);
+}
+
+/* ── Components ─────────────────────────────────────────────────────────────── */
+
+/* The accent as a 3-stop vertical gradient with a hairline top highlight. A flat
+   fill reads as cheap; the ramp plus the inner highlight is the whole difference.
+   Named `metal-gold` for now — see the legacy-alias note in the token block. */
+.metal-gold {
+  background-image: linear-gradient(
+    180deg,
+    var(--gold-hi) 0%,
+    var(--gold) 46%,
+    var(--gold-lo) 100%
+  );
+  color: var(--on-gold);
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.55);
+}
+
+.metal-platinum {
+  background-image: linear-gradient(
+    180deg,
+    var(--platinum-hi) 0%,
+    var(--platinum) 50%,
+    var(--platinum-lo) 100%
+  );
+  color: #1b2547;
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.7);
+}
+
+/* Gem chips — alpha fill + hairline border + a top inner highlight. Glassy
+   WITHOUT backdrop-filter, which G4 bans outright. */
+.gem {
+  border-radius: 0.75rem;
+  border: 1px solid var(--gem-green-line);
+  background: var(--gem-green-bg);
+  box-shadow: inset 0 1px 0 var(--chip-highlight);
+  color: var(--gem-green-text);
+}
+
+.gem-pink {
+  border-color: var(--gem-pink-line);
+  background: var(--gem-pink-bg);
+  color: var(--gem-pink-text);
+}
+
+/**
+ * NeoPOP-style primary button (v2 §4, Premium Craft 2).
+ *
+ * Rigid corners, a layered plate shadow, and a physical press that moves the
+ * button onto its own shadow. Replicated in CSS rather than pulling in
+ * neopop-web: that library predates React 19 and this is ~15 lines.
+ */
+.neopop {
+  border-radius: 6px;
+  border: 1px solid var(--gold-lo);
+  box-shadow: 3px 3px 0 0 var(--gold-lo);
+  transition: transform 150ms ease, box-shadow 150ms ease;
+}
+
+.neopop:active:not(:disabled) {
+  transform: translate(3px, 3px);
+  box-shadow: 0 0 0 0 var(--gold-lo);
+}
+
+/* Numbers are the emotional content of this app (v1 §9, v2 §4). Tabular figures
+   so a counting-up number does not jitter as digits change width. */
+.numeral {
+  font-family: var(--font-display);
+  font-variant-numeric: tabular-nums;
+  font-weight: 700;
+  letter-spacing: -0.02em;
+  line-height: 1;
+}
+
+/* Glow is for exactly two things: the live streak flame and the target ring at
+   the moment it is crossed. Never body text, never two glows touching.
+   Derived from the accent token so it followed the palette to lime instead of
+   staying a hard-coded gold that would now clash. */
+.glow-gold {
+  filter: drop-shadow(0 0 10px color-mix(in srgb, var(--accent) 48%, transparent));
+}
+
+/**
+ * The streak flame's idle flicker (v2 §4 dopamine map #1: "Animated flame").
+ *
+ * Transform-only so it composites on the GPU and costs no layout on a ₹10K
+ * Android — a fire that reflows the page every 1.8s is worse than a static
+ * emoji. Deliberately slow and small: a flame that thrashes reads as a loading
+ * spinner, and this one is meant to be ambient company on the home screen, not
+ * an alert. The reduced-motion block at the bottom kills it for free.
+ */
+@keyframes gl-flicker {
+  0%   { transform: scale(var(--flame-scale, 1)) rotate(-1.5deg); }
+  50%  { transform: scale(calc(var(--flame-scale, 1) * 1.06)) rotate(1.5deg); }
+  100% { transform: scale(var(--flame-scale, 1)) rotate(-1.5deg); }
+}
+
+.animate-flicker {
+  animation: gl-flicker 1.8s ease-in-out infinite;
+}
+
+/**
+ * Overdue follow-ups: "urgency without alarm" (v2 §4 dopamine map #4).
+ *
+ * Border colour only — no transform, no opacity on text, nothing that could make
+ * a row of names harder to read. A pulse that moves the row would fight the
+ * thumb aiming at it.
+ */
+@keyframes gl-pulse {
+  0%, 100% { border-color: var(--heat); }
+  50%      { border-color: color-mix(in srgb, var(--heat) 35%, transparent); }
+}
+
+.animate-pulse-soft {
+  animation: gl-pulse 2.4s ease-in-out infinite;
+}
+
+/* The single stroke a checkmark draws itself with (SuccessTick). Animating
+   stroke-dashoffset is the only way to reveal a path progressively without
+   running JavaScript on every frame. */
+@keyframes gl-draw {
+  to { stroke-dashoffset: 0; }
+}
+
+@keyframes gl-rise {
+  from { opacity: 0; transform: translateY(6px); }
+  to { opacity: 1; transform: none; }
+}
+
+.animate-rise {
+  animation: gl-rise 220ms ease-out both;
+}
+
+/* ── Motion budget (RULES G5) ───────────────────────────────────────────────── */
+/* Not a nicety: vestibular disorders are real, and this audience is on cheap
+   phones where animation costs frames. Everything becomes an instant state
+   change; nothing is lost but the movement. */
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
+    scroll-behavior: auto !important;
+  }
+  .glow-gold {
+    filter: none;
+  }
+}
+
+/* The QR poster prints on its own — app chrome is not part of the page. */
+@media print {
+  header,
+  nav,
+  aside {
+    display: none !important;
+  }
+  main {
+    max-width: none !important;
+    padding: 0 !important;
+  }
+}

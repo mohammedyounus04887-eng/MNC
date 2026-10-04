@@ -1,0 +1,306 @@
+# Staging-only override. Backend Environment name MUST be staging.
+# Empty required values deliberately prevent fallback to production apphosting.yaml.
+# Fill non-secret values from the approved staging inventory; no invented IDs/secrets.
+runConfig:
+  minInstances: 0
+  maxInstances: 2
+  concurrency: 20
+  cpu: 1
+  memoryMiB: 512
+
+env:
+  - variable: NEXT_PUBLIC_FIREBASE_PROJECT_ID
+    value: "club-growline-staging"
+    availability:
+      - BUILD
+      - RUNTIME
+
+  - variable: NEXT_PUBLIC_FIREBASE_AUTH_DOMAIN
+    value: "club-growline-staging.firebaseapp.com"
+    availability:
+      - BUILD
+      - RUNTIME
+
+  - variable: NEXT_PUBLIC_FIREBASE_API_KEY
+    value: "AIzaSyDue9KZjtsrIGCLKwUoqbElwWD_9Bh05Zw"
+    availability:
+      - BUILD
+      - RUNTIME
+
+  - variable: NEXT_PUBLIC_FIREBASE_APP_ID
+    value: "1:452669241471:web:99c771053716a055fee74a"
+    availability:
+      - BUILD
+      - RUNTIME
+
+  - variable: NEXT_PUBLIC_SITE_URL
+    value: ""
+    availability:
+      - BUILD
+      - RUNTIME
+
+  - variable: NEXT_PUBLIC_FIREBASE_APPCHECK_PROVIDER
+    value: "enterprise"
+    availability:
+      - BUILD
+      - RUNTIME
+
+  - variable: NEXT_PUBLIC_FIREBASE_APPCHECK_SITE_KEY
+    value: ""
+    availability:
+      - BUILD
+      - RUNTIME
+
+  - variable: NEXT_PUBLIC_FIREBASE_APPCHECK_DEBUG_TOKEN
+    value: ""
+    availability:
+      - BUILD
+      - RUNTIME
+
+  - variable: NEXT_PUBLIC_FIREBASE_AUTH_EMULATOR_HOST
+    value: ""
+    availability:
+      - BUILD
+      - RUNTIME
+
+  - variable: NEXT_PUBLIC_FIRESTORE_EMULATOR_HOST
+    value: ""
+    availability:
+      - BUILD
+      - RUNTIME
+
+  - variable: FIREBASE_AUTH_EMULATOR_HOST
+    value: ""
+    availability:
+      - BUILD
+      - RUNTIME
+
+  - variable: FIRESTORE_EMULATOR_HOST
+    value: ""
+    availability:
+      - BUILD
+      - RUNTIME
+
+  - variable: FIREBASE_STORAGE_EMULATOR_HOST
+    value: ""
+    availability:
+      - BUILD
+      - RUNTIME
+
+  - variable: FIREBASE_SERVICE_ACCOUNT
+    value: ""
+    availability:
+      - BUILD
+      - RUNTIME
+
+  - variable: DATABASE_URL
+    value: "file:./staging-build.db"
+    availability:
+      - BUILD
+      - RUNTIME
+
+  - variable: DEMO_MODE
+    value: "false"
+    availability:
+      - BUILD
+      - RUNTIME
+
+  - variable: ADMIN_UIDS
+    value: ""
+    availability:
+      - BUILD
+      - RUNTIME
+
+  - variable: INTEGRATION_HANDOFF_ENABLED
+    value: "false"
+    availability:
+      - BUILD
+      - RUNTIME
+
+  - variable: CLUB_FIREBASE_PROJECT_ID
+    value: "club-growline-club-staging"
+    availability:
+      - BUILD
+      - RUNTIME
+
+  - variable: GROWLINE_CLUB_DESTINATION_URL
+    value: "https://us-central1-club-growline-club-staging.cloudfunctions.net/growlineHandoff"
+    availability:
+      - BUILD
+      - RUNTIME
+
+  - variable: GROWLINE_CLUB_REDEEM_URL
+    value: "https://us-central1-club-growline-club-staging.cloudfunctions.net/redeemGrowlineClubCode"
+    availability:
+      - BUILD
+      - RUNTIME
+
+  - variable: GROWLINE_CLUB_REVOKE_URL
+    value: "https://us-central1-club-growline-club-staging.cloudfunctions.net/revokeGrowlineClubLink"
+    availability:
+      - BUILD
+      - RUNTIME
+
+  - variable: GROWLINE_CLUB_DESTINATION_AUDIENCE
+    value: "urn:club-growline:staging"
+    availability:
+      - BUILD
+      - RUNTIME
+
+  - variable: GROWLINE_CLUB_SERVICE_KEY_ID
+    value: ""
+    availability:
+      - BUILD
+      - RUNTIME
+
+  - variable: GROWLINE_CLUB_CONSENT_TEXT
+    value: ""
+    availability:
+      - BUILD
+      - RUNTIME
+
+  - variable: GROWLINE_CLUB_CONSENT_VERSION
+    value: ""
+    availability:
+      - BUILD
+      - RUNTIME
+
+  - variable: NEXT_PUBLIC_VAPID_PUBLIC_KEY
+    value: ""
+    availability:
+      - BUILD
+      - RUNTIME
+
+  - variable: VAPID_PRIVATE_KEY
+    value: ""
+    availability:
+      - BUILD
+      - RUNTIME
+
+  - variable: VAPID_SUBJECT
+    value: ""
+    availability:
+      - BUILD
+      - RUNTIME
+
+  - variable: CRON_SECRET
+    value: ""
+    availability:
+      - BUILD
+      - RUNTIME
+
+  - variable: RAZORPAY_KEY_ID
+    value: ""
+    availability:
+      - BUILD
+      - RUNTIME
+
+  - variable: RAZORPAY_KEY_SECRET
+    value: ""
+    availability:
+      - BUILD
+      - RUNTIME
+
+  - variable: RAZORPAY_WEBHOOK_SECRET
+    value: ""
+    availability:
+      - BUILD
+      - RUNTIME
+
+  - variable: RAZORPAY_PLAN_MONTHLY
+    value: ""
+    availability:
+      - BUILD
+      - RUNTIME
+
+  - variable: RAZORPAY_PLAN_ANNUAL
+    value: ""
+    availability:
+      - BUILD
+      - RUNTIME
+
+  - variable: PRIVACY_ENTITY_NAME
+    value: ""
+    availability:
+      - BUILD
+      - RUNTIME
+
+  - variable: PRIVACY_GRIEVANCE_OFFICER
+    value: ""
+    availability:
+      - BUILD
+      - RUNTIME
+
+  - variable: PRIVACY_GRIEVANCE_EMAIL
+    value: ""
+    availability:
+      - BUILD
+      - RUNTIME
+
+  - variable: PRIVACY_POSTAL_ADDRESS
+    value: ""
+    availability:
+      - BUILD
+      - RUNTIME
+
+  - variable: GROWLINE_CLUB_SERVICE_KEY
+    secret: GROWLINE_CLUB_SERVICE_KEY
+    availability:
+      - RUNTIME
+
+  - variable: INTEGRATION_ACTIVITY_ENABLED
+    value: "false"
+    availability:
+      - RUNTIME
+
+  - variable: INTEGRATION_SSO_ENABLED
+    value: "false"
+    availability:
+      - RUNTIME
+
+  - variable: GROWLINE_INTEGRATION_AUDIENCE
+    value: "urn:growline-club:staging:activity"
+    availability:
+      - RUNTIME
+
+  - variable: CLUB_WEB_ORIGIN
+    value: "https://club-growline-club-staging.web.app"
+    availability:
+      - RUNTIME
+
+  - variable: GROWLINE_JOBS_ENABLED
+    value: "false"
+    availability:
+      - RUNTIME
+
+  - variable: PRIVACY_NOTICE_APPROVED
+    value: "false"
+    availability:
+      - RUNTIME
+
+  - variable: PRIVACY_NOTICE_VERSION
+    value: ""
+    availability:
+      - RUNTIME
+
+  - variable: FEDERATION_SERVICE_KEY_ID
+    value: ""
+    availability:
+      - RUNTIME
+  - variable: FEDERATION_CLUB_ORIGIN
+    value: "https://club-growline-club-staging.web.app"
+    availability:
+      - RUNTIME
+  - variable: FEDERATION_GROWLINE_ORIGIN
+    value: ""
+    availability:
+      - RUNTIME
+  - variable: FEDERATION_PEER_URL
+    value: "https://us-central1-club-growline-club-staging.cloudfunctions.net/federation"
+    availability:
+      - RUNTIME
+  - variable: STAGING_SSO_APPROVAL_REFERENCE
+    value: ""
+    availability:
+      - RUNTIME
+  # Bind FEDERATION_SERVICE_KEY only after separate, explicit SSO staging approval.

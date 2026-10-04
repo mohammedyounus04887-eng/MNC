@@ -1,0 +1,293 @@
+name: Deploy hosting
+
+# Deploying is merging. Nothing else is needed and nothing else happens.
+#
+# WHY THIS EXISTS
+# The club is run from a phone. Before this, shipping a fix meant finding a PC,
+# pulling, building and running the Firebase CLI — so fixes sat finished and
+# unshipped for as long as it took someone to sit down at a laptop. A merge is
+# something you can do from a phone; a deploy was not.
+#
+# WHAT IT DEPLOYS
+# Hosting only, and that is deliberate. CLAUDE.md: "Do not deploy Firestore rules
+# or Cloud Functions without the owner present. Everything writes as an anonymous
+# user; one rule too strict stops the club mid-service." A rules change can take
+# the club down in the middle of a session, so it stays a decision somebody makes
+# on purpose at a keyboard — never a side effect of merging.
+#
+# AFTER IT RUNS
+# The app is a PWA and caches itself. A device keeps serving the old code until it
+# hard-refreshes (Ctrl+Shift+R), so "deployed" and "what the club sees" are not the
+# same moment.
+#
+# ONE-TIME SETUP
+# Repo → Settings → Secrets and variables → Actions → New repository secret:
+#   name:  FIREBASE_SERVICE_ACCOUNT
+#   value: the whole JSON from Firebase Console → Project Settings →
+#          Service Accounts → Generate new private key
+# That key can deploy to this project, so treat it like a password. It can be
+# revoked in the Google Cloud console without touching anything else.
+
+on:
+  push:
+    branches: [main]
+  # Lets you re-deploy the current main from the Actions tab without an empty
+  # commit — useful when a deploy failed for a reason that has since been fixed.
+  workflow_dispatch:
+
+# One deploy at a time. Two merges in quick succession would otherwise race, and
+# the loser could overwrite the winner with an older build.
+concurrency:
+  group: deploy-hosting
+  cancel-in-progress: false
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+
+      # Checks the service-account key BEFORE the two minutes of build, and says
+      # what is wrong with it in words somebody can act on.
+      #
+      # Without this, a bad key surfaces as "Failed to authenticate, have you run
+      # firebase login?" — which is not what happened and sends you looking in the
+      # wrong place. The real error underneath is OpenSSL's
+      # "error:1E08010C:DECODER routines::unsupported", which means the PEM could
+      # not be parsed. That has already cost one debugging round.
+      #
+      # It prints booleans, counts and the project id. It never prints the key,
+      # and it masks the account name: GitHub masks the secret itself in logs, but
+      # NOT values derived from it, so anything echoed here must be safe on its own.
+      - name: Check the service-account key is usable
+        env:
+          SA: ${{ secrets.FIREBASE_SERVICE_ACCOUNT }}
+        run: |
+          node <<'JS'
+          const crypto = require("crypto");
+          const raw = process.env.SA || "";
+          // Also written to the run summary, which is the page you land on from
+          // the phone notification. The reason this matters: nine merges in a row
+          // failed here and every one of them looked, from anywhere except the
+          // step log, like a deploy that had happened. A failure nobody reads is
+          // the same as no check at all.
+          const summarise = (title, body) => {
+            const f = process.env.GITHUB_STEP_SUMMARY;
+            if (!f) return;
+            try {
+              require("fs").appendFileSync(
+                f,
+                "## ❌ " + title + "\n\n**The site was NOT deployed.** " +
+                "What is on the club's screens is the previous build.\n\n```\n" +
+                body + "\n```\n"
+              );
+            } catch { /* summary is a courtesy, never a reason to fail differently */ }
+          };
+          const die = (msg, fix) => {
+            console.error("\n  FIREBASE_SERVICE_ACCOUNT is not usable: " + msg);
+            console.error("\n  How to fix it:\n" + fix + "\n");
+            summarise(
+              "Deploy stopped: the service-account key is not usable",
+              msg + "\n\nHow to fix it:\n" + fix
+            );
+            process.exit(1);
+          };
+          const REGEN =
+            "    1. Firebase Console -> Project Settings -> Service Accounts\n" +
+            "    2. Generate new private key -> downloads a .json file\n" +
+            "    3. Open that file in a PLAIN TEXT editor and copy ALL of it,\n" +
+            "       including the outer { }. Do not reformat or prettify it —\n" +
+            "       the \\n escapes inside private_key must survive verbatim.\n" +
+            "    4. Repo -> Settings -> Secrets and variables -> Actions ->\n" +
+            "       FIREBASE_SERVICE_ACCOUNT -> Update secret -> paste -> save.";
+
+          if (!raw.trim()) die("the secret is empty or does not exist.", REGEN);
+
+          let sa;
+          try {
+            sa = JSON.parse(raw);
+          } catch {
+            try {
+              sa = JSON.parse(Buffer.from(raw, "base64").toString("utf8"));
+              console.log("  note: the secret is base64. That is supported.");
+            } catch {
+              die(
+                "it is not valid JSON. Something reformatted it, or only part of\n" +
+                "  the file was copied.",
+                REGEN
+              );
+            }
+          }
+
+          if (sa.type !== "service_account")
+            die(
+              'this is not a service-account key (its "type" is ' +
+                JSON.stringify(sa.type) + ").\n" +
+                "  The web app config (apiKey / authDomain / appId) is a DIFFERENT\n" +
+                "  thing and cannot deploy — it is already in the Build step above.",
+              REGEN
+            );
+
+          if (sa.project_id !== "magic-nutrition-club")
+            die(
+              "it belongs to project " + JSON.stringify(sa.project_id) +
+                ", not magic-nutrition-club.\n" +
+                "  Deploying would ship this club's app to somebody else's project.",
+              REGEN
+            );
+
+          const key = sa.private_key || "";
+          if (!key) die('it has no "private_key" field.', REGEN);
+          if (!key.includes("-----BEGIN"))
+            die("its private_key is not a PEM block.", REGEN);
+          if (!key.includes("\n"))
+            die(
+              "its private_key has no line breaks. This is the usual cause: the\n" +
+              "  \\n escapes were turned into spaces by a formatter or a phone\n" +
+              "  clipboard. OpenSSL cannot read a PEM without them.",
+              REGEN
+            );
+
+          try {
+            crypto.createPrivateKey(key);
+          } catch (e) {
+            const size =
+              "It is " + key.length + " characters over " +
+              key.split("\n").length + " lines; a real one is\n  around 1700 " +
+              "characters over 29 lines.";
+            // Under ~200 there is no key at all, only the BEGIN and END markers
+            // with nothing of substance between them. That is a placeholder from
+            // an example file, not a damaged copy of a real key, and the fix is
+            // different: you need to go and get the real one, not re-copy this.
+            die(
+              (key.length < 200
+                ? "its private_key is a PLACEHOLDER, not a key. " + size + "\n" +
+                  "  That is the BEGIN and END lines with nothing between them, so\n" +
+                  "  this is an example or redacted file rather than the one the\n" +
+                  "  console generates. Nothing was damaged in copying — the real\n" +
+                  "  key was never in it."
+                : "OpenSSL rejects its private_key: " + e.message + "\n  " + size +
+                  " Well short of that means the copy was\n" +
+                  "  truncated — long values get cut by phone clipboards and by\n" +
+                  "  editors that preview a file rather than open it."),
+              REGEN
+            );
+          }
+
+          const email = String(sa.client_email || "");
+          console.log("  project:  " + sa.project_id);
+          console.log("  account:  " + email.replace(/^[^@]+/, "***"));
+          console.log("  key:      parses, " + key.split("\n").length + " lines");
+          console.log("  Service-account key is usable.");
+          JS
+
+      - run: npm ci
+
+      # The gate. A broken build must never reach the club, and this is the only
+      # thing standing between a bad merge and the till.
+      #
+      # The TypeScript baseline is now clean and blocks deployment.
+      - name: Tests
+        run: npm test
+
+      - name: Typecheck
+        run: npm run typecheck
+
+      # These are the public web config. They are compiled into the JavaScript
+      # every visitor downloads, so they are not secrets and are kept here rather
+      # than in eight separate repo settings nobody remembers to fill in. Access
+      # is controlled by Firestore Security Rules, never by hiding this.
+      - name: Build
+        env:
+          VITE_FIREBASE_API_KEY: AIzaSyDDuaXiyyx4RVSexcGRx7gOqNbtb_LCNoU
+          VITE_FIREBASE_AUTH_DOMAIN: magic-nutrition-club.firebaseapp.com
+          VITE_FIREBASE_PROJECT_ID: magic-nutrition-club
+          VITE_FIREBASE_STORAGE_BUCKET: magic-nutrition-club.firebasestorage.app
+          VITE_FIREBASE_MESSAGING_SENDER_ID: "597094915388"
+          VITE_FIREBASE_APP_ID: "1:597094915388:web:672367e53bbe05ce8a5239"
+          VITE_FIREBASE_MEASUREMENT_ID: G-EQ53D26H6C
+          # Set this as a repo VARIABLE (not a secret) to enable web push. It is
+          # the VAPID *public* key; without it the notification toggle stays off.
+          VITE_FIREBASE_VAPID_KEY: ${{ vars.VITE_FIREBASE_VAPID_KEY }}
+        run: npm run build
+
+      # The entry bundle carries a content hash, so its filename is a fingerprint
+      # of this exact build. Captured before deploying so the check afterwards
+      # compares against what this run actually produced.
+      - name: Note what this build produced
+        id: built
+        run: |
+          entry=$(grep -o 'assets/index-[A-Za-z0-9_-]*\.js' dist/index.html | head -1)
+          if [ -z "$entry" ]; then
+            echo "Could not find the entry bundle in dist/index.html." >&2
+            exit 1
+          fi
+          echo "entry=$entry" >> "$GITHUB_OUTPUT"
+          echo "built entry: $entry"
+
+      - name: Deploy to Firebase Hosting
+        uses: FirebaseExtended/action-hosting-deploy@v0
+        with:
+          repoToken: ${{ secrets.GITHUB_TOKEN }}
+          firebaseServiceAccount: ${{ secrets.FIREBASE_SERVICE_ACCOUNT }}
+          projectId: magic-nutrition-club
+          channelId: live
+
+      # A green tick on the deploy step means the API accepted the upload, not
+      # that the club is being served it. This asks the live site what it is
+      # actually serving and compares it with what this run built, so "deployed"
+      # is something observed rather than assumed.
+      - name: Check the live site is serving this build
+        run: |
+          expected='${{ steps.built.outputs.entry }}'
+          echo "expecting: $expected"
+          for i in 1 2 3 4 5 6; do
+            live=$(curl -sS -H 'Cache-Control: no-cache' https://magic-nutrition-club.web.app/ \
+                   | grep -o 'assets/index-[A-Za-z0-9_-]*\.js' | head -1)
+            echo "attempt $i: live is serving ${live:-<nothing>}"
+            if [ "$live" = "$expected" ]; then
+              {
+                echo "## ✅ Deployed"
+                echo ""
+                echo "The live site is serving \`$expected\` — this build."
+                echo ""
+                echo "> The app is a PWA and caches itself. Devices keep running the"
+                echo "> old code until they hard-refresh (Ctrl+Shift+R)."
+              } >> "$GITHUB_STEP_SUMMARY"
+              exit 0
+            fi
+            sleep 10
+          done
+          {
+            echo "## ⚠️ Deploy reported success, but the site is serving something else"
+            echo ""
+            echo "| | |"
+            echo "|---|---|"
+            echo "| this build | \`$expected\` |"
+            echo "| live now | \`${live:-nothing found}\` |"
+            echo ""
+            echo "Either the release did not take effect, or something deployed"
+            echo "over it. Do not assume the club has this build."
+          } >> "$GITHUB_STEP_SUMMARY"
+          exit 1
+
+      # Anything else that failed — a test, the build, the deploy call itself.
+      # The preflight and the live check write their own, more specific summaries;
+      # this is the backstop so that no failure ever renders as a blank page. The
+      # cost of missing one is that a fix looks shipped and is not.
+      - name: Say plainly that nothing was deployed
+        if: failure()
+        run: |
+          if [ ! -s "$GITHUB_STEP_SUMMARY" ]; then
+            {
+              echo "## ❌ Deploy failed — the site was NOT updated"
+              echo ""
+              echo "The club is still on the previous build. Open the failed step"
+              echo "above to see which one stopped it."
+            } >> "$GITHUB_STEP_SUMMARY"
+          fi

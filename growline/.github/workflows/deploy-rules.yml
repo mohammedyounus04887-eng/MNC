@@ -1,0 +1,143 @@
+name: Deploy Security Rules
+
+# A button, not a trigger.
+#
+# `firebase deploy` needs a credential, and the two ways to give one to a person working
+# from a phone or a cloud session are both bad: paste a CI token into a chat, or paste a
+# service-account key. Both put a broad credential somewhere it outlives the task.
+#
+# This is the third way. The credential lives once in a GitHub repository secret, nobody
+# retypes it, every deploy is attributable to whoever pressed the button, and the run log
+# is the record of what went out.
+#
+# ## Why manual and not on push to master
+#
+# Security Rules are the only thing standing between a coach's prospects and the public.
+# An automatic deploy on merge means a rules change ships at the moment somebody is
+# thinking about something else — and a bad one is not a failed build, it is an open
+# database that looks fine. The eight rules suites gate the merge; a human gates the
+# deploy.
+#
+# ## Scope: rules and indexes only
+#
+# Never functions, never hosting, never the whole project. `firebase deploy` with no
+# `--only` deploys everything it finds configured, which from here would include nine
+# Cloud Functions nobody asked to ship.
+#
+# ## Setup, once
+#
+#   1. Create a service account in the Google Cloud console for `grow--line` with
+#      **Firebase Rules Admin** and **Cloud Datastore Index Admin**. Those two roles and
+#      nothing else — this workflow deploys rules and indexes, so anything more is
+#      standing authority it never uses.
+#   2. Download its JSON key.
+#   3. GitHub → Settings → Secrets and variables → Actions → New repository secret,
+#      named `FIREBASE_SERVICE_ACCOUNT`, with the whole JSON as the value.
+#   4. Actions → Deploy Security Rules → Run workflow.
+#
+# Until step 3 exists the workflow stops with an explanation rather than a stack trace.
+
+on:
+  workflow_dispatch:
+    inputs:
+      target:
+        description: "What to deploy"
+        required: true
+        default: "storage"
+        type: choice
+        options:
+          - storage
+          - firestore:rules
+          - firestore:indexes
+          - "firestore:rules,storage"
+          - "firestore:indexes,firestore:rules,storage"
+      project:
+        description: "Firebase project alias from .firebaserc"
+        required: true
+        default: "prod"
+        type: string
+
+# One deploy at a time. Two concurrent rules deploys is a race whose loser silently wins.
+concurrency:
+  group: deploy-rules-${{ inputs.project }}
+  cancel-in-progress: false
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+
+      - name: Check the credential exists before doing anything else
+        env:
+          SA: ${{ secrets.FIREBASE_SERVICE_ACCOUNT }}
+        run: |
+          if [ -z "$SA" ]; then
+            echo "::error::FIREBASE_SERVICE_ACCOUNT is not set."
+            echo "Add it under Settings → Secrets and variables → Actions."
+            echo "See the header of this workflow file for which roles it needs."
+            exit 1
+          fi
+          echo "Credential present."
+
+      - run: npm ci
+
+      # The rules being deployed are the rules 189 checks run against, and this proves
+      # that on the exact commit going out rather than on whatever passed last week.
+      # Java 21: firebase-tools 15 refuses to start the emulators on anything older.
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "21"
+
+      - name: Re-run the Security Rules suites against this commit
+        if: contains(inputs.target, 'rules') || contains(inputs.target, 'storage')
+        env:
+          NEXT_PUBLIC_FIREBASE_PROJECT_ID: growline-dev
+          FIRESTORE_EMULATOR_HOST: 127.0.0.1:8080
+          FIREBASE_AUTH_EMULATOR_HOST: 127.0.0.1:9099
+        run: |
+          npx firebase emulators:exec \
+            --only auth,firestore \
+            --project growline-dev \
+            "npm run test:rules && npm run test:rules:boards && npm run test:rules:quals \
+             && npm run test:rules:duplication && npm run test:rules:session4 \
+             && npm run test:rules:workspaces && npm run test:rules:goals \
+             && npm run test:rules:wall"
+
+      - name: Write the credential to a file the CLI can read
+        env:
+          SA: ${{ secrets.FIREBASE_SERVICE_ACCOUNT }}
+        run: |
+          printf '%s' "$SA" > "$RUNNER_TEMP/sa.json"
+          chmod 600 "$RUNNER_TEMP/sa.json"
+
+      - name: Show what is about to change
+        env:
+          GOOGLE_APPLICATION_CREDENTIALS: ${{ runner.temp }}/sa.json
+        run: |
+          echo "Project alias : ${{ inputs.project }}"
+          echo "Deploying     : ${{ inputs.target }}"
+          echo "Commit        : ${{ github.sha }}"
+          echo "--- storage.rules ---"
+          cat storage.rules
+
+      - name: Deploy
+        env:
+          GOOGLE_APPLICATION_CREDENTIALS: ${{ runner.temp }}/sa.json
+        run: |
+          npx firebase deploy \
+            -P "${{ inputs.project }}" \
+            --only "${{ inputs.target }}" \
+            --non-interactive
+
+      - name: Remove the credential
+        if: always()
+        run: rm -f "$RUNNER_TEMP/sa.json"

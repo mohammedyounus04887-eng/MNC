@@ -1,0 +1,70 @@
+rules_version = '2';
+service firebase.storage {
+  match /b/{bucket}/o {
+    function signedIn() {
+      return request.auth != null && request.auth.token.firebase.sign_in_provider != 'anonymous' && federationSessionValid();
+    }
+    function federationSessionValid() {
+      let sessionPath = /databases/(default)/documents/integrationFederationSessions/$(request.auth.uid);
+      // Storage permits only two distinct Firestore lookups: pair + independent member grant.
+      return ('federationPairId' in request.auth.token) ? federationPairValid() :
+        (!firestore.exists(sessionPath) || request.auth.token.get('auth_time', 0) > firestore.get(sessionPath).data.validAfter);
+    }
+    function federationPairValid() {
+      let pairPath = /databases/(default)/documents/integrationFederationPairs/$(request.auth.token.federationPairId);
+      let pair = firestore.get(pairPath).data;
+      return firestore.exists(pairPath) && pair.status == 'active' && pair.prepared == false && pair.get('pendingInvalidation', false) == false &&
+        pair.clubProject == request.auth.token.aud && pair.clubMemberAuthUid == request.auth.uid &&
+        pair.clubId == request.auth.token.clubId && request.auth.token.role == 'member' && request.auth.token.get('station', false) == false &&
+        pair.epoch == request.auth.token.federationEpoch &&
+        request.auth.token.federationSessionEpoch == pair.localSessionEpoch && request.auth.token.auth_time > pair.validAfter;
+    }
+    function clubRole(clubId, roles) {
+      return signedIn() && request.auth.token.clubId == clubId && request.auth.token.role in roles &&
+        firestore.exists(/databases/(default)/documents/clubs/$(clubId)/authorizations/$(request.auth.uid)) &&
+        firestore.get(/databases/(default)/documents/clubs/$(clubId)/authorizations/$(request.auth.uid)).data.enabled == true &&
+        firestore.get(/databases/(default)/documents/clubs/$(clubId)/authorizations/$(request.auth.uid)).data.clubId == clubId &&
+        firestore.get(/databases/(default)/documents/clubs/$(clubId)/authorizations/$(request.auth.uid)).data.role == request.auth.token.role;
+    }
+    function clubAdmin(clubId) {
+      return clubRole(clubId, ['owner', 'admin']) ||
+        platformAdmin();
+    }
+    function platformAdmin() {
+      return signedIn() && !('federationPairId' in request.auth.token) &&
+        firestore.exists(/databases/(default)/documents/superAdmins/$(request.auth.uid)) &&
+        firestore.get(/databases/(default)/documents/superAdmins/$(request.auth.uid)).data.get('enabled', true) == true;
+    }
+    match /clubs/{clubId}/landing/{file} {
+      allow read: if true;
+      allow write: if clubAdmin(clubId);
+    }
+    match /clubs/{clubId}/menu/{file} {
+      allow read: if true;
+      allow write: if clubAdmin(clubId);
+    }
+    match /globalMenu/images/{file} {
+      allow read: if true;
+      allow write: if platformAdmin();
+    }
+    match /clubs/{clubId}/members/{memberId}/{file} {
+      allow read: if clubRole(clubId, ['owner', 'admin', 'reception', 'member']) &&
+        (request.auth.token.role != 'member' || request.auth.uid == memberId);
+      allow write: if clubRole(clubId, ['owner', 'admin', 'reception', 'member']) &&
+        (request.auth.token.role != 'member' || request.auth.uid == memberId);
+    }
+    match /clubs/{clubId}/{category}/{allPaths=**} {
+      // Exclude paths with a dedicated policy: overlapping allows are additive.
+      allow read: if !(category in ['members', 'landing', 'menu']) && (
+        clubRole(clubId, ['owner', 'admin', 'reception']) ||
+        (category == 'tv' && clubRole(clubId, ['tv'])) ||
+        (category in ['kitchen', 'inventory'] && clubRole(clubId, ['kitchen'])));
+      allow write: if !(category in ['members', 'landing', 'menu']) && (
+        clubRole(clubId, ['owner', 'admin', 'reception']) ||
+        (category in ['kitchen', 'inventory'] && clubRole(clubId, ['kitchen'])));
+    }
+    match /{allPaths=**} {
+      allow read, write: if false;
+    }
+  }
+}

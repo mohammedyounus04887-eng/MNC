@@ -1,0 +1,36 @@
+{
+  "firestore": {
+    "rules": "firestore.rules",
+    "indexes": "firestore.indexes.json",
+    "predeploy": [
+      "node staging/verify.mjs"
+    ]
+  },
+  "storage": {
+    "rules": "storage.rules",
+    "predeploy": [
+      "node staging/verify.mjs"
+    ]
+  },
+  "apphosting": [
+    {
+      "backendId": "",
+      "rootDir": ".",
+      "ignore": [
+        "node_modules",
+        ".git",
+        ".next",
+        ".env*",
+        "staging/*.env.local",
+        "staging/*.local.json",
+        "functions",
+        "*-debug.log",
+        "test-results",
+        "playwright-report"
+      ],
+      "predeploy": [
+        "node staging/verify.mjs"
+      ]
+    }
+  ]
+}

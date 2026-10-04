@@ -1,0 +1,13 @@
+{
+  "name": "essl-bridge",
+  "version": "1.0.0",
+  "description": "Local bridge: ESSL K90 fingerprint device → Firestore → Android tablet",
+  "main": "index.js",
+  "scripts": {
+    "start": "node index.js"
+  },
+  "dependencies": {
+    "firebase-admin": "^13.0.0",
+    "node-zklib": "^1.0.4"
+  }
+}

@@ -1,0 +1,729 @@
+rules_version = '2';
+
+/**
+ * Growline Security Rules.
+ *
+ * The privacy toggle (v1 §5.4) is enforced HERE, not in app code. BUILD_PROMPT_V2
+ * §3 calls this non-negotiable, and §5.7 makes the test mandatory: an upline must
+ * not be able to read a downline's prospects while `shareProspects` is false, even
+ * with a hand-written query that bypasses the UI entirely.
+ *
+ * ## Reads are allowed; writes are not
+ *
+ * Every write still goes through an API route using the Admin SDK, which bypasses
+ * rules — the server-only shape D1 established and D38 kept. So writes are denied
+ * to clients across the board. This is not laziness: a client-writable collection
+ * needs per-field validation rules to be safe, and none of that is needed while no
+ * client writes. v2.1b opens reads only because realtime listeners need them.
+ *
+ * When a future session does allow a client write, it must add field validation in
+ * the same change. "allow write: if isSignedIn()" would let anyone set their own
+ * `uplinePath`, which is the array every other rule here trusts.
+ */
+service cloud.firestore {
+  match /databases/{database}/documents {
+
+    function signedIn() {
+      return request.auth != null && federationSessionValid();
+    }
+
+    function federationSessionValid() {
+      let sessionPath = /databases/$(database)/documents/integrationFederationSessions/$(request.auth.uid);
+      return (!exists(sessionPath) || request.auth.token.get('auth_time', 0) > get(sessionPath).data.validAfter) &&
+        (!('federationPairId' in request.auth.token) || federationPairValid(sessionPath));
+    }
+    function federationPairValid(sessionPath) {
+      let pairPath = /databases/$(database)/documents/integrationFederationPairs/$(request.auth.token.federationPairId);
+      let pair = get(pairPath).data;
+      return exists(pairPath) && pair.status == 'active' && pair.prepared == false && pair.get('pendingInvalidation', false) == false &&
+        pair.growlineProject == request.auth.token.aud && pair.growlineAuthUid == request.auth.uid &&
+        pair.epoch == request.auth.token.federationEpoch &&
+        request.auth.token.federationSessionEpoch == (exists(sessionPath) ? get(sessionPath).data.epoch : 0) &&
+        get(/databases/$(database)/documents/integrationLinks/$(pair.linkId)).data.status == 'active' &&
+        get(/databases/$(database)/documents/users/$(request.auth.uid)).data.workspaceId == pair.workspaceId &&
+        get(/databases/$(database)/documents/users/$(request.auth.uid)).data.get('disabled', false) == false;
+    }
+
+    function uid() {
+      return request.auth.uid;
+    }
+
+    // The user document IS keyed by the Auth uid (D34), so this is a direct read
+    // with no mapping collection and no second lookup.
+    function coach(coachId) {
+      return get(/databases/$(database)/documents/users/$(coachId)).data;
+    }
+
+    /**
+     * The upward half of the privacy rule: sharing is ON *and* the reader is an
+     * ancestor. One `get()`, bound once, and both conditions read out of it.
+     *
+     * It is written with a `let` rather than two `coach()` calls for two reasons.
+     * The lookup budget is the smaller one — repeated access to the same path is
+     * documented as cached, but the docs hedge it with "may be", and one `get()` in
+     * the source needs no hedge. The larger reason is that the invariant becomes
+     * syntactic: both halves MUST be about the same coach. Two separate lookups can
+     * drift apart under editing, and a toggle check that reads one document while
+     * the path check reads another is a privacy hole that still looks correct.
+     */
+    function sharedUpwardBy(coachId) {
+      let c = coach(coachId);
+      return c.shareProspects == true && uid() in c.uplinePath;
+    }
+
+    /**
+     * Activity flows upward, always (v1 §5.4). `uplinePath` holds every ancestor,
+     * so one array membership test covers the whole line at any depth.
+     */
+    function inLineOf(path) {
+      return signedIn() && uid() in path;
+    }
+
+    match /users/{userId} {
+      /**
+       * Denied to every client, deliberately — including a coach reading their own.
+       *
+       * Nothing in the browser reads this collection. The team tree is the one
+       * screen that shows another coach's name, photo and counts, and it is built
+       * server-side by `buildTeamTree()` through the Admin SDK; drilling into a
+       * downline's line goes through `/api/team`, which checks the line itself. The
+       * listener that opened reads at all (see the header) watches `prospects`,
+       * filtered to its own coach.
+       *
+       * The grant this replaces let an upline read any document in their line, on
+       * the reasoning — stated in its own comment — that the team tree only shows
+       * summary fields. Rules have no field-level reads. The grant was the whole
+       * document, so a hand-written query returned `phone`, `referralCode`,
+       * `levelName`, `followupPushOn`, `plan`, `trialEndsAt`, and `shareProspects`
+       * itself. The last two are why this was worth closing rather than annotating:
+       * `plan == "readonly"` means a failed mandate (F10), and a coach's payment
+       * trouble is not their whole ancestor chain's to read; and a rule that hands
+       * the privacy toggle's current value to the party it protects against is
+       * arguing with v1 §5.4 rather than serving it. The phone number is the least
+       * of it — a direct upline usually has it already, but `inLineOf` was the
+       * entire ancestor chain (up to 100 hops per D36), not the person who
+       * recruited you.
+       *
+       * The privacy rule below calls `coach()`, which `get()`s this collection.
+       * That still resolves: a `get()` inside a rule is not itself subject to these
+       * rules. Emulator-verified — all four privacy-toggle checks pass with this
+       * collection closed, and e2e/rules.test.ts says so where they live.
+       *
+       * If a screen ever needs another coach's name and photo in the BROWSER, add a
+       * server-written summary document holding only those fields. Reopening the
+       * whole user document to get two of its fields is how this started.
+       */
+      allow read, write: if false;
+    }
+
+    match /prospects/{prospectId} {
+      /**
+       * THE privacy rule. Two ways in, and only two:
+       *
+       *   1. it is your own prospect, or
+       *   2. that coach has turned sharing ON *and* you are in their upline path.
+       *
+       * Both halves of (2) matter. Without the toggle check an upline sees
+       * everything; without the path check anyone with sharing on is public.
+       *
+       * Note the query constraint this imposes: a client listing prospects must
+       * filter on a single `coachId`, so the rule resolves exactly one coach for
+       * the whole request. Listing across a whole line is not expressible here,
+       * and that is the intended outcome rather than a limitation.
+       *
+       * WHAT THE LOOKUP COSTS — written down because it has been misread once, as
+       * "one `get()` per returned document, so the listing dies at about ten
+       * prospects". It does not. Firestore evaluates a query ONCE, against the
+       * query's own constraints rather than against the rows that come back — the
+       * same "rules are not filters" machinery that makes the unfiltered listing
+       * below fail while the filtered one passes. So `coachId` is a single bound
+       * value, `sharedUpwardBy` resolves a single `/users` document, and the result
+       * count does not multiply anything. The budget is per REQUEST: 10 document
+       * lookups for a single-document read, 20 for a query (the docs say 10 for
+       * both, so budget against 10). This rule spends ONE of them, and zero on the
+       * ownership branch, which short-circuits before any lookup. Measured, not
+       * assumed: e2e/rules.test.ts lists 26 shared prospects green and pins the
+       * ceilings with a canary, so a future rule that really is charged per row
+       * lands as a red test instead of a production permission-denied.
+       */
+      allow read: if signedIn() && (
+        uid() == resource.data.coachId
+        || sharedUpwardBy(resource.data.coachId)
+      );
+      allow write: if false;
+    }
+
+    /**
+     * dailyLogs and targets are closed to every client, INCLUDING the coach who owns
+     * them. Both used to grant reads up the line via `inLineOf(resource.data.uplinePath)`.
+     *
+     * ## Why that grant had to go
+     *
+     * The `uplinePath` on these documents is a SNAPSHOT taken when the row was written.
+     * `prospects` resolves the coach live, so it follows the tree; these did not. The
+     * moment a coach can be re-parented — which is the whole point of the "Link my line"
+     * work — every log and target written before the move keeps pointing at the OLD
+     * upline. The result is not a stale roll-up, it is a stale GRANT: the previous upline
+     * keeps read access to a coach who no longer reports to them, indefinitely, and the
+     * new upline has none.
+     *
+     * Counts still flow up (v1 §5.4). They always did so through the Admin SDK — the team
+     * roll-up is `buildTeamTree()` on the server, and it is unaffected by this rule.
+     *
+     * ## Why deny rather than resolve live
+     *
+     * A live lookup — `uid() in coach(resource.data.userId).uplinePath`, the shape
+     * `prospects` uses — would be correct, but it forces every client query to pin
+     * `userId`, and the whole-line roll-up query filters on `uplinePath` instead. So the
+     * live rule would break the only query shape this collection is read with.
+     *
+     * The real answer is that no browser code reads either collection: verified, the only
+     * client-side Firestore reads in the repo are `prospects` (RealtimeProspects) and
+     * `threads` (RealtimeThreads). This was a grant no feature asked for — exactly what
+     * D48 closed on `users`, for the same reason.
+     *
+     * If a future screen needs a live team roll-up in the browser, it gets a rule then,
+     * written against the query it actually makes — as a decision, not an inheritance.
+     * Note that a snapshot-based grant will be wrong again the day re-parenting ships, so
+     * that rule must resolve the coach live.
+     */
+    match /dailyLogs/{logId} {
+      allow read, write: if false;
+    }
+
+    match /targets/{targetId} {
+      allow read, write: if false;
+    }
+
+    match /proofs/{proofId} {
+      // Only the two people in the exchange: the coach it is about, and the
+      // upline who asked. Not the rest of the line — a proof photo is evidence
+      // for one reviewer, not a team broadcast.
+      allow read: if signedIn() && (
+        uid() == resource.data.coachId || uid() == resource.data.requestedById
+      );
+      allow write: if false;
+    }
+
+    match /reports/{reportId} {
+      /**
+       * Denied to every client, deliberately.
+       *
+       * A report is reached by its token through a public server route (D17) —
+       * the token IS the access control, and the prospect holding it has no
+       * account at all. Allowing signed-in clients to read this collection would
+       * add a second, weaker path to the same health data for no feature.
+       */
+      allow read, write: if false;
+    }
+
+    match /pushSubscriptions/{subId} {
+      allow read, write: if false;
+    }
+
+    /**
+     * The reader's own user document, for rules that need their position in the tree.
+     *
+     * A `get()` inside a rule is not itself subject to rules, which is why this still
+     * works with /users closed to clients (D48). One lookup per request, not per
+     * document — the shared-prospect measurement in D48 established that.
+     */
+    function me() {
+      return get(/databases/$(database)/documents/users/$(uid())).data;
+    }
+
+    match /threads/{threadId} {
+      /**
+       * A broadcast is addressed by WHO SENT IT (F8). Three ways in:
+       *
+       *   1. you wrote it — you watch your own seen and ack counts, or
+       *   2. your DIRECT upline wrote it — either scope reaches you, or
+       *   3. any ancestor wrote it with scope "all".
+       *
+       * ## Why (2) is separate from (3) rather than folded into it
+       *
+       * Not tidiness — it is what makes a client query provable. Rules for a list
+       * request are evaluated ONCE against the query, not per returned document, so
+       * every field the rule tests must be pinned by the query's own constraints. A
+       * client listening on `senderId == <one id>` pins `resource.data.senderId`, so
+       * `senderId == me().uplineId` becomes a concrete boolean and Firestore can
+       * decide it. Written as a single branch needing both `senderId in
+       * me().uplinePath` AND a scope test, a listener would have to pin scope too,
+       * and a coach's direct upline would need two listeners to cover one person.
+       *
+       * A client listening for a DEEPER ancestor's threads must pin `scope == "all"`
+       * as well. That is correct and intended: a "direct line only" message from a
+       * grandparent is not addressed to you, and the rule will not serve it.
+       *
+       * ## What this deliberately does not allow
+       *
+       * An unpinned listing of `threads` is refused, exactly like `prospects`. There
+       * is no query that returns "every thread" — a coach can only ask for a named
+       * sender's, and only for senders standing above them.
+       */
+      allow read: if signedIn() && (
+        uid() == resource.data.senderId
+        // A Real V announcement (F12) reaches every signed-in coach. Listed FIRST among
+        // the non-owner branches and needing no `me()` lookup, so a client listening on
+        // `scope == "platform"` is decidable with zero document reads.
+        || resource.data.scope == 'platform'
+        || resource.data.senderId == me().uplineId
+        || (resource.data.scope == 'all' && resource.data.senderId in me().uplinePath)
+      );
+      allow write: if false;
+    }
+
+    match /lineRequests/{requestId} {
+      /**
+       * Denied to every client.
+       *
+       * A pending request names two coaches and the shape of a proposed relationship, and
+       * accepting one MOVES a subtree — so both the read and the write have to be decided
+       * by a server that can re-check the cycle guard, the depth cap and who is allowed to
+       * approve. The screen is server-rendered and the answers go through an API route.
+       *
+       * The read matters as much as the write here: an open read would let anyone list who
+       * is trying to attach to whom, which is a map of somebody's team being built.
+       */
+      allow read, write: if false;
+    }
+
+    match /adminAudit/{entryId} {
+      /**
+       * Denied to every client, including admins.
+       *
+       * An audit trail that the audited party can read from the browser is a trail they
+       * can learn to work around, and one they might be able to write to if a future
+       * session relaxes this by half. The admin panel renders it server-side through the
+       * Admin SDK, which is the only reader it needs.
+       */
+      allow read, write: if false;
+    }
+
+    match /threadReceipts/{receiptId} {
+      /**
+       * Denied to every client, and the counts are why.
+       *
+       * A sender watches `seenCount` and `ackCount`, which live on the thread document
+       * they already read. Nothing in the browser needs the individual receipts, and
+       * opening them would hand a sender a per-person read log of their line — a
+       * different and more intrusive thing than a number. If a "who has acknowledged"
+       * screen is ever built, it is server-rendered like the team tree, and this stays
+       * shut. Same discipline as D48.
+       */
+      allow read, write: if false;
+    }
+
+    match /referralCodes/{code} {
+      /**
+       * Reservation documents (D41). Denied to every client.
+       *
+       * A client write would let anyone squat another coach's code, which is the
+       * exact collision the reservation exists to prevent. Reads are denied too:
+       * `/join/<code>` resolves server-side, and an open read would turn this
+       * collection into a directory mapping every code to a coach's uid.
+       */
+      allow read, write: if false;
+    }
+
+    // Anything not named above — including collections a future session adds and
+    // forgets to think about — is denied.
+    match /{document=**} {
+      allow read, write: if false;
+    }
+
+    /**
+     * Leaderboard snapshots (F13). APPENDED after the catch-all deliberately: rules are
+     * OR-ed across match blocks, so a later `allow` grants what the recursive wildcard
+     * above denies, and no existing block had to be touched to add this one.
+     *
+     * ## Three kinds of document, and only one of them is readable
+     *
+     *   podium  the top 3 of one board. Readable by a coach who BELONGS to that board's
+     *           scope, and nobody else.
+     *   roster  the full ordering, bottom included, plus the participant count. Denied
+     *           to every client, always. This is the rule that makes "nobody can see
+     *           who is last" a property of the database rather than of the markup: the
+     *           screen slices each coach's upward-only window out of this document with
+     *           the Admin SDK, and the browser is handed the slice. If this collection
+     *           ever needs a client-side board, it reads the podium — never this.
+     *   optOut  one document per coach who asked not to be listed. Readable only by the
+     *           coach it names, because "who has opted out" is a list of people who
+     *           wanted less visibility and is nobody else's to enumerate.
+     *
+     * ## Membership is resolved LIVE, never from a snapshot
+     *
+     * `inScope()` reads the CURRENT user document (D64's rule: authorization must not
+     * trust a `uplinePath` frozen at write time). The board documents do carry the
+     * ranking as it stood when the job ran — that is what a snapshot is — but who is
+     * allowed to open one is decided against the tree as it is now. A coach moved to a
+     * different line loses the old line's boards on their next read, which is the
+     * behaviour D64 was written to guarantee.
+     *
+     * `scopeKey` for a level group or a city is `trim().lower()` of the free text a
+     * coach typed (RULES L8 — this app ships no rank names). Rules can restate exactly
+     * that, which is why the normalisation is deliberately no cleverer than two calls:
+     * a membership test the rules cannot express is a membership test nobody enforces.
+     *
+     * One `get()` per request, on the reader's own document — the same budget the
+     * prospects rule established (D48).
+     */
+    match /leaderboardSnapshots/{snapshotId} {
+      function inScope(scopeType, scopeKey) {
+        let m = me();
+        return scopeType == 'org'
+          ? (m.uplinePath.size() == 0
+              ? uid() == scopeKey
+              : m.uplinePath[m.uplinePath.size() - 1] == scopeKey)
+          : scopeType == 'line'
+            ? (uid() == scopeKey || scopeKey in m.uplinePath)
+            : scopeType == 'level'
+              ? (m.levelName is string && m.levelName.trim().lower() == scopeKey)
+              : scopeType == 'club'
+                ? (m.city is string && m.city.trim().lower() == scopeKey)
+                : false;
+      }
+
+      allow read: if signedIn() && (
+        (resource.data.kind == 'podium'
+          && resource.data.workspaceId is string
+          && resource.data.workspaceId == me().workspaceId
+          && inScope(resource.data.scopeType, resource.data.scopeKey))
+        || (resource.data.kind == 'optOut' && resource.data.userId == uid())
+      );
+
+      /**
+       * Written only by the scheduled job through the Admin SDK, and by the opt-out
+       * route on the signed-in coach's own document. A client write would let anyone
+       * publish a board naming themselves first, or delete somebody else's opt-out and
+       * put them back on the listings they left.
+       */
+      allow write: if false;
+    }
+
+    /**
+     * Event qualifications (F14). APPENDED after the catch-all for the same reason the
+     * leaderboards block above was: rules are OR-ed across match blocks, so a later
+     * `allow` grants what the recursive wildcard denies, and no existing block had to
+     * be touched.
+     *
+     * ## Two collections, and only one of them is readable
+     *
+     *   qualifications        the DEFINITION — who made it, what it is called, the
+     *                         conditions, the closing date. Readable by its creator and
+     *                         by the coaches it applies to. A condition nobody can read
+     *                         is not a condition, and this document holds no numbers
+     *                         about any person.
+     *
+     *   qualificationProgress everybody's NUMBERS, and the roll-up over them. Denied to
+     *                         every client, always — including the coach a row is about
+     *                         and the upline who created the qualification.
+     *
+     * That second denial is the load-bearing one, and it is the same reasoning as the
+     * roster document above. Between them the rows carry the audience size, every
+     * participant's shortfall, and who is nowhere near — and a qualifier list built by
+     * a component that chose not to render those is a courtesy, not a guarantee. The
+     * screens read them server-side with the Admin SDK and hand each reader only what
+     * their seat entitles them to: a participant gets the names of everyone who has
+     * QUALIFIED and a COUNT of who is one condition away, never that second list by
+     * name. Denied to the creator too, because a grant with an exception is a grant
+     * somebody widens, and their dashboard is server-rendered anyway (D48's discipline).
+     *
+     * ## Who a qualification is addressed to
+     *
+     * By WHO CREATED IT, exactly like a thread (F8), and the branches are split the
+     * same way for the same reason: a list request is evaluated once against the
+     * query rather than per document, so each branch has to be decidable from fields
+     * the query itself pins. A client listening for a direct-line qualification pins
+     * `creatorId`; one listening deeper must pin `audience == 'all'` as well, which is
+     * correct — a "direct line only" qualification from a grandparent is not addressed
+     * to you and the rule will not serve it.
+     *
+     * ## Membership is resolved LIVE (D64)
+     *
+     * `me()` reads the CURRENT user document. Nothing is trusted off the qualification
+     * itself: no participant list is stored on it, and no `uplinePath` is frozen onto
+     * it at write time. A coach moved to another line loses these on their next read,
+     * which is exactly what the evaluator does to their progress row.
+     */
+    match /qualifications/{qualificationId} {
+      allow read: if signedIn()
+        && resource.data.workspaceId is string
+        && resource.data.workspaceId == me().workspaceId && (
+        uid() == resource.data.creatorId
+        || resource.data.creatorId == me().uplineId
+        || (resource.data.audience == 'all'
+            && resource.data.creatorId in me().uplinePath)
+      );
+      /**
+       * Written only by the API route through the Admin SDK. A client write would let
+       * a coach announce a qualification in somebody else's name, to a line they are
+       * not in — and, worse, edit the conditions of one people are already being
+       * measured against.
+       */
+      allow write: if false;
+    }
+
+    match /qualificationProgress/{rowId} {
+      /**
+       * Denied to everybody, deliberately — see the header above. A client write would
+       * be a coach marking themselves qualified, which is the whole feature.
+       */
+      allow read, write: if false;
+    }
+
+    /**
+     * Duplication readings (F20). APPENDED after the catch-all for the same reason the
+     * two blocks above were: rules are OR-ed across match blocks, so a later `allow`
+     * grants what the recursive wildcard denies, and no existing block had to be
+     * touched to add this one.
+     *
+     * ## What one of these documents holds
+     *
+     * A score out of 100 for one coach's LINE, and the per-level counts that produced
+     * it: how many people sit at each of the three measured levels, how many of them
+     * logged, how many joined too recently to be counted. **No names, no phone
+     * numbers, no prospect data, and nothing about money.** A level is a count of
+     * people, which is the shape v1 §5.4 lets flow up a line at all.
+     *
+     * ## Readable by its subject, and by nobody else
+     *
+     * The coach a reading is about may read it: it is a summary of their own team,
+     * assembled from activity that already flows to them, and the screen that renders
+     * it is theirs.
+     *
+     * Their UPLINE may not, and that is a deliberate narrowing rather than an
+     * oversight. Activity counts do flow upward under P1, so a coaching screen showing
+     * an upline how their downlines' lines are duplicating would be legitimate — but
+     * it does not exist, and a grant written for a screen nobody has designed is a
+     * grant nobody has thought about. Two things also follow from D64 the moment such
+     * a grant is written: the ancestry test would have to be resolved LIVE against the
+     * subject's current user document, because every reading in this collection carries
+     * counts frozen at whenever the job last ran and a reader moved to another line
+     * must lose access on their next read; and it would cost a `get()` on somebody
+     * else's user document on every request. When that screen is built it is
+     * server-rendered like the team tree and the Admin SDK does the reading, so this
+     * rule stays exactly as it is (D48's discipline).
+     *
+     * ## Written only by the scheduled job
+     *
+     * A client write is a coach typing their own duplication score. The number is the
+     * output of a read across the entire organisation, and it is the one figure in
+     * these modules that an individual has both the motive and, without this line, the
+     * means to fabricate. Deletes are denied for the same reason: a reading a coach
+     * dislikes must not be removable by the coach it is about.
+     */
+    match /duplicationScores/{readingId} {
+      allow read: if signedIn() && resource.data.userId == uid();
+      allow write: if false;
+    }
+
+    /**
+     * Voice notes (session 4, feature 1). APPENDED after the catch-all, like the three
+     * blocks above: rules are OR-ed across match blocks, so a later `allow` grants what
+     * the recursive wildcard denies and no existing block had to be touched.
+     *
+     * ## Why this is the strictest read rule in the file
+     *
+     * Every other new collection here holds counts. This one holds a RECORDING of a
+     * coach speaking about their working day, plus whatever the phone transcribed. It
+     * is unstructured, and a coach dictating on a road says whatever is in their head:
+     * "met Ramesh on the walk, he's coming Tuesday, his number is…". Nothing can stop
+     * that and nothing should try.
+     *
+     * So it is treated as the most sensitive document these modules create. P1 lets
+     * activity COUNTS flow up a line, and a voice note is not a count — it is the raw
+     * material a count was extracted from, and it may carry exactly the prospect names
+     * and numbers P1 keeps from an upline whose downline has `shareProspects` off.
+     * There is no toggle that opens this: an upline cannot read one, at any depth, with
+     * any setting, ever. Only the coach who recorded it.
+     *
+     * `resource.data.userId` and not the document id, even though the id begins with
+     * the uid: an id is a naming convention and a field is data. A rule resting on the
+     * shape of a string is a rule that breaks silently the day the id format changes.
+     *
+     * ## Written only by the API route
+     *
+     * A client write would let a coach plant a recording — and, more to the point, set
+     * `status: "counted"` on one, which is the field the purge job reads to decide what
+     * to delete. Marking a note counted is the server's statement that a `dailyLogs`
+     * document exists; a client saying it would be a claim about a collection this one
+     * cannot see.
+     *
+     * Deletes are denied too, which is deliberate and slightly uncomfortable: a coach
+     * cannot delete their own recording from the client. They do not need to — an
+     * uncounted note is deleted whole after 30 days, and a counted one no longer holds
+     * audio at all — and a delete grant here is a grant that must then be reasoned
+     * about every time this collection gains a field.
+     */
+    match /voiceLogs/{noteId} {
+      allow read: if signedIn() && resource.data.userId == uid();
+      allow write: if false;
+    }
+
+    /**
+     * Silence alerts (session 4, feature 3) — the bookkeeping that stops a quiet leg
+     * being reported to its upline every single morning.
+     *
+     * ## Denied to everybody, including the upline it is about
+     *
+     * A row here says "this leg has been quiet since the 3rd, and we told Asha about it
+     * on the 10th". Two reasons it is not client-readable.
+     *
+     * The first is the plain one: nothing in the browser reads it. The alert is a push
+     * notification and the screen it lands on is the team tree, which is server-rendered
+     * with the Admin SDK. A grant for a screen nobody has built is a grant nobody has
+     * thought about (the argument `duplicationScores` makes directly above).
+     *
+     * The second matters more. This is a record about a DOWNLINE's inactivity, written
+     * for their upline. It is the one artifact in these modules whose subject is not its
+     * reader, and a coach discovering a queryable log of when the app reported them as
+     * quiet is the exact failure the copy was written to avoid — an alert that reads as
+     * an accusation, made durable and inspectable. The counts it holds flow upward under
+     * P1 quite legitimately; the RECORD of having been reported does not need to exist
+     * anywhere a client can reach.
+     */
+    match /silenceAlerts/{alertId} {
+      allow read, write: if false;
+    }
+
+    /**
+     * Organisation workspaces — the multi-tenant boundary.
+     *
+     * Appended after the catch-all like the modules above: rules OR across match blocks,
+     * so a later `allow` grants what the recursive wildcard denies, and no existing block
+     * was touched.
+     *
+     * ## Why these are readable at all, rather than denied like `users`
+     *
+     * The pattern in this file is to deny a collection until a feature genuinely needs a
+     * client read (D48, D64), and by that rule alone both of these would be closed today —
+     * the settings screen is server-rendered.
+     *
+     * They are open, scoped, on purpose. A deny-all would make the isolation TEST vacuous:
+     * "a coach in workspace A cannot read workspace B" would pass because nobody can read
+     * anything, and it would keep passing right up until the first client read is added,
+     * at which point the test that was supposed to be guarding the boundary has never
+     * actually exercised it. A rule that permits the in-workspace read and refuses the
+     * cross-workspace one is the only version whose green means something.
+     *
+     * ## The boundary itself
+     *
+     * `me().workspaceId` is read LIVE from the user document, never from a value stored on
+     * the document being read — D64's rule. A workspace id copied onto a row at write time
+     * would keep granting access after a coach moved, which is the same stale-grant bug
+     * that closed `dailyLogs` and `targets`.
+     *
+     * A coach with no `workspaceId` — a row the backfill has not reached — matches nothing:
+     * `null == null` is never reachable here because the comparison is against a field that
+     * must equal a non-empty id. Failing closed on a missing boundary is the only safe
+     * direction.
+     *
+     * Writes are denied to every client. Both collections are written by API routes on the
+     * Admin SDK, and a client-writable `workspaceId` would let anyone move themselves into
+     * another organisation — which is the whole boundary, handed over.
+     */
+    match /workspaces/{workspaceId} {
+      // The document id IS the workspace id, so a `get` pins it and this is decidable
+      // with one lookup. An unfiltered LIST cannot prove it and is therefore refused —
+      // there is no query that returns "every organisation".
+      allow read: if signedIn() && workspaceId == me().workspaceId;
+      allow write: if false;
+    }
+
+    /**
+     * Goal sheets (Feature A) — two visibilities on what a coach thinks of as one sheet.
+     *
+     * ## Why it is two documents
+     *
+     * A2 wants the goals, blockers and hours visible to the direct upline — that is the
+     * coaching material the feature exists for — while the personal reason (school fees, a
+     * loan, leaving a job) stays private unless the coach turns it on.
+     *
+     * Rules have no field-level reads. Letting the upline read the sheet lets them read
+     * every field on it, so "private by default" is not expressible on one document without
+     * moving enforcement into app code — which A2 forbids in the same sentence that asks
+     * for it. Hence a parent for the shareable half and a `private/needs` child for the
+     * rest, with the child's rule reading the parent's switch.
+     *
+     * ## DIRECT upline, never the chain
+     *
+     * `uid() in me().uplinePath` would be the cheap check and it is the wrong one:
+     * `uplinePath` is every ancestor up to 100 hops (D36). A2 says the direct upline, so
+     * this compares `uplineId` on the SUBJECT's document. A goal sheet is a conversation
+     * between two people, not something a great-grandparent in the line reads.
+     *
+     * Resolved live from the subject's user document, never from a value copied onto the
+     * sheet — a stored uplineId would keep granting access after a re-parent, which is
+     * exactly the stale-grant bug D64 closed.
+     */
+    function subject(userId) {
+      return get(/databases/$(database)/documents/users/$(userId)).data;
+    }
+
+    match /goalSheets/{userId} {
+      allow read: if signedIn() && (
+        uid() == userId
+        || uid() == subject(userId).uplineId
+      );
+      allow write: if false;
+
+      match /private/{docId} {
+        /**
+         * The personal reason. The owner always; the direct upline ONLY while the coach's
+         * own `shareNeeds` switch is true.
+         *
+         * Both halves of the upline branch matter. Without the switch check an upline reads
+         * everything; without the upline check anyone who turned sharing on is public. Same
+         * shape as the F11 prospect rule, and the same reason it is written as one `get()`
+         * on the parent — two lookups can drift apart under editing, and a switch check
+         * reading one document while the relationship check reads another is a privacy hole
+         * that still looks correct.
+         */
+        allow read: if signedIn() && (
+          uid() == userId
+          || (
+            get(/databases/$(database)/documents/goalSheets/$(userId)).data.shareNeeds == true
+            && uid() == subject(userId).uplineId
+          )
+        );
+        allow write: if false;
+      }
+    }
+
+    /**
+     * The conversation around a target (A3) — proposed, accepted, or reopened, plus the
+     * actions answering the coach's blockers.
+     *
+     * Readable by the two people in it and nobody else. Not the upline chain: a
+     * grandparent reading "Chandan asked to renegotiate his target" turns a private
+     * disagreement between two people into something the line can see, which is the
+     * fastest way to make coaches stop using the reopen button and quietly ignore targets
+     * instead — the exact behaviour this feature exists to end.
+     *
+     * Both ids are read off the conversation itself rather than resolved live, and that is
+     * safe here in a way it would NOT be for the goal sheet: they are written together in
+     * one server write and never change, because re-proposing replaces the document. There
+     * is no window in which they can go stale (contrast D64, where the stale value was a
+     * tree path that moves underneath the document).
+     *
+     * Writes denied. Accepting is the psychological centre of the feature and its
+     * authorisation — only the coach the target is FOR may accept — is re-derived on the
+     * server. A client-writable status would let an upline accept on their downline's
+     * behalf, which is an imposed quota wearing the agreement's clothes.
+     */
+    match /goalConversations/{targetId} {
+      allow read: if signedIn() && (
+        uid() == resource.data.coachId || uid() == resource.data.uplineId
+      );
+      allow write: if false;
+    }
+
+    match /workspaceMembers/{memberId} {
+      // A client listing members must filter on `workspaceId`, which pins the field the
+      // rule tests. Listing across organisations is not expressible, which is the point.
+      allow read: if signedIn() && resource.data.workspaceId == me().workspaceId;
+      allow write: if false;
+    }
+  }
+}

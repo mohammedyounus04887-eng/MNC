@@ -1,0 +1,201 @@
+generator client {
+  provider = "prisma-client"
+  output   = "../src/generated/prisma"
+}
+
+datasource db {
+  provider = "sqlite"
+}
+
+model User {
+  id             String   @id @default(cuid())
+  phone          String   @unique
+  name           String
+  photoUrl       String?  @map("photo_url")
+  city           String?
+  uplineId       String?  @map("upline_id")
+  upline         User?    @relation("Line", fields: [uplineId], references: [id], onDelete: SetNull)
+  downlines      User[]   @relation("Line")
+  referralCode   String   @unique @map("referral_code")
+  plan           String   @default("trial") // trial | monthly | annual | readonly
+  trialEndsAt    DateTime @map("trial_ends_at")
+  shareProspects Boolean  @default(false) @map("share_prospects")
+  createdAt      DateTime @default(now()) @map("created_at")
+
+  /// Last date (YYYY-MM-DD, India time) the morning follow-up reminder went out,
+  /// so a retried or re-run daily job cannot notify the same coach twice.
+  followupPushOn String? @map("followup_push_on")
+  /**
+   * The coach's own word for the level they are working at, shown on the progress
+   * screen. NULL by default and never seeded with a suggestion: Section 5.1 forbids
+   * any direct-selling or nutrition company's rank names appearing in this app, so
+   * the only way this field is ever populated is a coach typing their own label.
+   */
+  levelName String? @map("level_name")
+
+  dailyLogs         DailyLog[]
+  prospects         Prospect[]
+  pushSubscriptions PushSubscription[]
+  targetsReceived   Target[]           @relation("TargetCoach")
+  targetsSet        Target[]           @relation("TargetSetter")
+  proofsRequested   Proof[]            @relation("ProofRequester")
+
+  @@index([uplineId])
+  @@map("users")
+}
+
+model PushSubscription {
+  id     String @id @default(cuid())
+  userId String @map("user_id")
+  user   User   @relation(fields: [userId], references: [id], onDelete: Cascade)
+  /// The push service URL. Unique because one device re-subscribing must replace
+  /// its old row rather than accumulate duplicates and send twice.
+  endpoint String @unique
+  p256dh   String
+  auth     String
+  /// Coach's device timezone at subscribe time, for sending the morning reminder
+  /// in their own morning rather than the server's.
+  timezone  String   @default("Asia/Kolkata")
+  createdAt DateTime @default(now()) @map("created_at")
+
+  @@index([userId])
+  @@map("push_subscriptions")
+}
+
+model Prospect {
+  id             String    @id @default(cuid())
+  coachId        String    @map("coach_id")
+  coach          User      @relation(fields: [coachId], references: [id], onDelete: Cascade)
+  /// Idempotency key from the offline queue, so a retried sync can't duplicate
+  /// a person. Null for QR self-fills, which are created online in one shot.
+  clientId       String?   @map("client_id")
+  name           String
+  phone          String
+  age            Int?
+  gender         String? // female | male | other
+  heightCm       Float?    @map("height_cm")
+  weightKg       Float?    @map("weight_kg")
+  stage          String    @default("spoken") // spoken | interested | invited | attended | member
+  nextFollowupAt DateTime? @map("next_followup_at")
+  source         String    @default("manual") // qr | manual
+  notes          String?
+  createdAt      DateTime  @default(now()) @map("created_at")
+
+  reports Report[]
+
+  @@unique([coachId, clientId])
+  @@index([coachId, createdAt])
+  /// Drives the follow-up queue and the daily reminder count.
+  @@index([coachId, nextFollowupAt])
+  @@map("prospects")
+}
+
+model Report {
+  id         String   @id @default(cuid())
+  prospectId String   @map("prospect_id")
+  prospect   Prospect @relation(fields: [prospectId], references: [id], onDelete: Cascade)
+  /// Unguessable public id. The report link travels over WhatsApp to someone
+  /// with no account, so the token IS the access control — never sequential.
+  token      String   @unique
+  /// Frozen snapshot of the metrics at generation time. The card, the PDF and
+  /// the public page all render from this, so what the prospect opens can never
+  /// drift from what the coach saw when they sent it.
+  metricsJson String  @map("metrics_json")
+  /// Deterministic hash of (snapshot version + the inputs). Unique per prospect so
+  /// two concurrent renders converge on one row instead of minting two live
+  /// tokens to the same person's health data.
+  inputsHash String   @map("inputs_hash")
+  /// Set when the coach opens the WhatsApp share (F4). Drives the
+  /// report -> send rate metric in Section 13.
+  sentAt     DateTime? @map("sent_at")
+  createdAt  DateTime @default(now()) @map("created_at")
+
+  @@unique([prospectId, inputsHash])
+  @@index([prospectId])
+  @@map("reports")
+}
+
+model OtpCode {
+  id        String   @id @default(cuid())
+  phone     String
+  codeHash  String   @map("code_hash")
+  expiresAt DateTime @map("expires_at")
+  attempts  Int      @default(0)
+  createdAt DateTime @default(now()) @map("created_at")
+
+  @@index([phone])
+  @@map("otp_codes")
+}
+
+model DailyLog {
+  id            String   @id @default(cuid())
+  userId        String   @map("user_id")
+  user          User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  logDate       DateTime @map("log_date")
+  servings      Int      @default(0)
+  memberships   Int      @default(0)
+  sessions      Int      @default(0)
+  invites       Int      @default(0)
+  followupsDone Int      @default(0) @map("followups_done")
+  note          String?
+  createdAt     DateTime @default(now()) @map("created_at")
+
+  @@unique([userId, logDate])
+  @@map("daily_logs")
+}
+
+model Target {
+  id             String   @id @default(cuid())
+  coachId        String   @map("coach_id")
+  coach          User     @relation("TargetCoach", fields: [coachId], references: [id], onDelete: Cascade)
+  setById        String   @map("set_by")
+  setBy          User     @relation("TargetSetter", fields: [setById], references: [id], onDelete: Cascade)
+  month          String // "YYYY-MM"
+  targetPoints   Int      @map("target_points")
+  progressPoints Int      @default(0) @map("progress_points")
+  status         String   @default("active") // active | achieved | missed
+  createdAt      DateTime @default(now()) @map("created_at")
+  updatedAt      DateTime @default(now()) @updatedAt @map("updated_at")
+
+  proofs Proof[]
+
+  @@unique([coachId, month])
+  @@index([setById])
+  @@map("targets")
+}
+
+model Proof {
+  id       String @id @default(cuid())
+  targetId String @map("target_id")
+  target   Target @relation(fields: [targetId], references: [id], onDelete: Cascade)
+  /// The upline who asked. Kept explicitly rather than inferred from the target, so
+  /// a request stays attributable even if the target is later reassigned.
+  requestedById String @map("requested_by")
+  requestedBy   User   @relation("ProofRequester", fields: [requestedById], references: [id], onDelete: Cascade)
+  /// What the upline asked to see. Their words, shown to the downline.
+  requestNote String? @map("request_note")
+  /**
+   * pending   — asked, nothing attached yet
+   * submitted — downline attached evidence, awaiting review
+   * approved / rejected — upline reviewed
+   *
+   * Section 11 lists only pending/approved/rejected; "submitted" is added because
+   * without it there is no way to tell "not answered yet" from "answered, awaiting
+   * the upline" — which is the whole state the downline is waiting on.
+   */
+  status String @default("pending")
+  /// Downscaled, re-encoded JPEG data URL. Re-encoding also drops EXIF, so a proof
+  /// photo cannot carry the coach's GPS location up to their upline.
+  mediaUrl    String?   @map("media_url")
+  /// The downline's note when submitting.
+  submitNote  String?   @map("submit_note")
+  /// The upline's comment when approving or rejecting.
+  comment     String?
+  createdAt   DateTime  @default(now()) @map("created_at")
+  submittedAt DateTime? @map("submitted_at")
+  reviewedAt  DateTime? @map("reviewed_at")
+
+  @@index([targetId])
+  @@index([requestedById])
+  @@map("proofs")
+}

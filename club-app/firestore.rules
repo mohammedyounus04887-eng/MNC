@@ -1,0 +1,338 @@
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+
+    function isSignedIn() {
+      return request.auth != null && request.auth.token.firebase.sign_in_provider != 'anonymous' && federationSessionValid();
+    }
+
+    function federationSessionValid() {
+      let sessionPath = /databases/$(database)/documents/integrationFederationSessions/$(request.auth.uid);
+      return (!exists(sessionPath) || request.auth.token.get('auth_time', 0) > get(sessionPath).data.validAfter) &&
+        (!('federationPairId' in request.auth.token) || federationPairValid(sessionPath));
+    }
+    function federationPairValid(sessionPath) {
+      let pairPath = /databases/$(database)/documents/integrationFederationPairs/$(request.auth.token.federationPairId);
+      let pair = get(pairPath).data;
+      return exists(pairPath) && pair.status == 'active' && pair.prepared == false && pair.get('pendingInvalidation', false) == false &&
+        pair.clubProject == request.auth.token.aud && pair.clubMemberAuthUid == request.auth.uid &&
+        pair.clubId == request.auth.token.clubId && request.auth.token.role == 'member' && request.auth.token.get('station', false) == false &&
+        pair.epoch == request.auth.token.federationEpoch &&
+        request.auth.token.federationSessionEpoch == (exists(sessionPath) ? get(sessionPath).data.epoch : 0) &&
+        get(/databases/$(database)/documents/clubs/$(pair.clubId)/integrationLinks/$(pair.linkId)).data.status == 'active';
+    }
+
+    function isSuperAdmin() {
+      return isSignedIn() && !('federationPairId' in request.auth.token) &&
+        exists(/databases/$(database)/documents/superAdmins/$(request.auth.uid)) &&
+        get(/databases/$(database)/documents/superAdmins/$(request.auth.uid)).data.get('enabled', true) == true;
+    }
+
+    function hasClubRole(clubId, role) {
+      return isSignedIn() &&
+        request.auth.token.clubId == clubId &&
+        request.auth.token.role == role &&
+        (!('station' in request.auth.token) || request.auth.token.station == true) &&
+        exists(/databases/$(database)/documents/clubs/$(clubId)/authorizations/$(request.auth.uid)) &&
+        get(/databases/$(database)/documents/clubs/$(clubId)/authorizations/$(request.auth.uid)).data.enabled == true;
+    }
+
+    function hasAnyClubRole(clubId, roles) {
+      return isSuperAdmin() || (isSignedIn() && request.auth.token.clubId == clubId &&
+        exists(/databases/$(database)/documents/clubs/$(clubId)/authorizations/$(request.auth.uid)) &&
+        get(/databases/$(database)/documents/clubs/$(clubId)/authorizations/$(request.auth.uid)).data.enabled == true &&
+        get(/databases/$(database)/documents/clubs/$(clubId)/authorizations/$(request.auth.uid)).data.clubId == clubId &&
+        get(/databases/$(database)/documents/clubs/$(clubId)/authorizations/$(request.auth.uid)).data.role == request.auth.token.role &&
+        request.auth.token.role in roles);
+    }
+
+    function canManageClub(clubId) {
+      return isSuperAdmin() || hasAnyClubRole(clubId, ['owner', 'admin']);
+    }
+
+    // ESSL K90 biometric device → member/volunteer mapping
+    match /biometricMappings/{esslId} {
+      allow read: if isSignedIn();
+      allow write: if isSuperAdmin();
+    }
+
+    // Global unknown punch relay (written by Cloud Function admin SDK, read by Settings test mode)
+    match /biometricUnknownPunch/{docId} {
+      allow read: if isSignedIn();
+      allow write: if false; // only Cloud Function (admin SDK) writes here
+    }
+
+    match /superAdmins/{uid} {
+      allow read: if isSignedIn() && request.auth.uid == uid;
+      allow write: if isSuperAdmin();
+    }
+
+    match /globalMenu/{itemId} {
+      allow read: if isSignedIn();
+      allow write: if isSuperAdmin();
+    }
+
+    match /users/{uid} {
+      allow read, write: if isSignedIn() &&
+        (request.auth.uid == uid || isSuperAdmin());
+    }
+
+    match /enquiries/{id} {
+      allow read: if isSuperAdmin();
+      allow create: if true;
+      allow update, delete: if isSuperAdmin();
+    }
+
+    match /clubApplications/{id} {
+      allow read: if isSuperAdmin();
+      allow create: if true;
+      allow update, delete: if isSuperAdmin();
+    }
+
+    match /clubs/{clubId} {
+      // Firestore cannot redact fields. Legacy documents containing credentials
+      // must be sanitized by the staged migration before they can be read.
+      allow read: if !resource.data.keys().hasAny(['kitchenPin', 'receptionPin', 'walletPin', 'tvPin', 'adminPin', 'btcPin']);
+      allow create: if isSuperAdmin();
+      allow update: if canManageClub(clubId);
+      allow delete: if isSuperAdmin();
+
+      match /authorizations/{uid} {
+        allow read: if isSignedIn() && (request.auth.uid == uid || canManageClub(clubId));
+        // Provisioning and revocation use an authorized Admin SDK endpoint.
+        allow write: if false;
+      }
+
+      match /stationSecrets/{secretId} {
+        allow read, write: if false;
+      }
+
+      match /security/{secretId} {
+        allow read, write: if false;
+      }
+
+      match /authorizationAudit/{auditId} {
+        allow read: if isSuperAdmin();
+        allow write: if false;
+      }
+
+      match /owner/{ownerId} {
+        allow read: if hasAnyClubRole(clubId, ['owner', 'admin', 'reception']);
+        allow write: if canManageClub(clubId);
+      }
+
+      match /members/{memberId} {
+        allow read: if hasAnyClubRole(clubId, ['owner', 'admin', 'reception']);
+        allow read: if hasAnyClubRole(clubId, ['member']) && request.auth.uid == memberId;
+        allow create: if hasAnyClubRole(clubId, ['owner', 'admin', 'reception']);
+        allow update: if hasAnyClubRole(clubId, ['owner', 'admin', 'reception', 'kitchen']);
+        allow delete: if canManageClub(clubId);
+
+        match /wallet/{doc} {
+          allow read: if hasAnyClubRole(clubId, ['owner', 'admin', 'reception']) ||
+            (hasAnyClubRole(clubId, ['member']) && request.auth.uid == memberId);
+          allow write: if hasAnyClubRole(clubId, ['owner', 'admin', 'reception']);
+        }
+
+        match /transactions/{txnId} {
+          allow read: if hasAnyClubRole(clubId, ['owner', 'admin', 'reception']);
+          allow write: if hasAnyClubRole(clubId, ['owner', 'admin', 'reception']);
+        }
+
+        match /weighIns/{id} {
+          allow read: if hasAnyClubRole(clubId, ['owner', 'admin', 'reception']);
+          allow write: if canManageClub(clubId);
+        }
+
+        match /attendance/{date} {
+          allow read: if hasAnyClubRole(clubId, ['owner', 'admin', 'reception']) ||
+            (hasAnyClubRole(clubId, ['member']) && request.auth.uid == memberId);
+          allow write: if hasAnyClubRole(clubId, ['owner', 'admin', 'reception']);
+        }
+
+        match /notifications/{id} {
+          allow read: if hasAnyClubRole(clubId, ['owner', 'admin', 'reception']);
+          allow write: if hasAnyClubRole(clubId, ['owner', 'admin', 'reception']);
+        }
+
+        match /invoices/{id} {
+          allow read: if hasAnyClubRole(clubId, ['owner', 'admin', 'reception']);
+          allow write: if hasAnyClubRole(clubId, ['owner', 'admin', 'reception']);
+        }
+      }
+
+      match /orders/{orderId} {
+        allow read: if hasAnyClubRole(clubId, ['owner', 'admin', 'reception', 'kitchen', 'tv']);
+        allow create: if hasAnyClubRole(clubId, ['owner', 'admin', 'reception']);
+        allow update: if hasAnyClubRole(clubId, ['owner', 'admin', 'reception', 'kitchen']);
+        allow delete: if canManageClub(clubId);
+      }
+
+      match /topupRequests/{id} {
+        allow read: if hasAnyClubRole(clubId, ['owner', 'admin', 'reception']);
+        allow create: if hasAnyClubRole(clubId, ['owner', 'admin', 'reception']);
+        allow update: if hasAnyClubRole(clubId, ['owner', 'admin', 'reception']);
+        allow delete: if canManageClub(clubId);
+      }
+
+      match /volunteers/{id} {
+        allow read: if hasAnyClubRole(clubId, ['owner', 'admin', 'reception']);
+        allow create: if hasAnyClubRole(clubId, ['owner', 'admin', 'reception']);
+        allow update: if hasAnyClubRole(clubId, ['owner', 'admin', 'reception']);
+        allow delete: if canManageClub(clubId);
+      }
+
+      match /announcements/{id} {
+        allow read: if hasAnyClubRole(clubId, ['owner', 'admin', 'reception']);
+        allow write: if canManageClub(clubId);
+      }
+
+      match /todaysSpecial/{id} {
+        allow read: if true;
+        allow write: if canManageClub(clubId);
+      }
+
+      match /menu/{itemId} {
+        allow read: if true;
+        allow write: if canManageClub(clubId);
+      }
+
+      match /menuPreferences/{itemId} {
+        allow read: if true;
+        allow write: if canManageClub(clubId);
+      }
+
+      match /feedback/{feedbackId} {
+        allow create: if true;
+        allow read, update, delete: if canManageClub(clubId);
+      }
+
+      match /reviews/{reviewId} {
+        allow read: if hasAnyClubRole(clubId, ['owner', 'admin', 'reception']);
+        allow create: if true;
+        allow update: if canManageClub(clubId);
+        allow delete: if canManageClub(clubId);
+      }
+
+      match /inventory/{itemId} {
+        allow read: if hasAnyClubRole(clubId, ['owner', 'admin', 'reception']);
+        allow write: if canManageClub(clubId);
+      }
+
+      // BTC participants + nested measurements subcollection (legacy v1)
+      match /btcParticipants/{participantId} {
+        allow read: if hasAnyClubRole(clubId, ['owner', 'admin', 'reception']);
+        allow write: if canManageClub(clubId);
+
+        match /measurements/{date} {
+          allow read: if hasAnyClubRole(clubId, ['owner', 'admin', 'reception']);
+          allow write: if canManageClub(clubId);
+        }
+      }
+
+      // BTC v2 — named challenges with participants / weigh-ins / meals
+      // Meals are member-writable so participants can upload their own
+      // photos; everything else is owner/coordinator-managed.
+      match /btcChallenges/{challengeId} {
+        allow read: if hasAnyClubRole(clubId, ['owner', 'admin', 'reception']);
+        allow write: if canManageClub(clubId);
+
+        match /participants/{memberId} {
+          allow read: if hasAnyClubRole(clubId, ['owner', 'admin', 'reception']);
+          allow write: if canManageClub(clubId);
+        }
+
+        match /weighIns/{weighInId} {
+          allow read: if hasAnyClubRole(clubId, ['owner', 'admin', 'reception']);
+          allow write: if canManageClub(clubId);
+        }
+
+        match /meals/{mealId} {
+          allow read: if hasAnyClubRole(clubId, ['owner', 'admin', 'reception']);
+          // Members upload their own meal photos; owner/coordinator review.
+          allow create, update: if isSignedIn();
+          allow delete: if canManageClub(clubId);
+
+          // Coach-only comment thread on a meal photo.
+          //   - Any signed-in user can read (owner, coordinator, the coach
+          //     themselves). Comments are NEVER surfaced on the customer's
+          //     own BTC page — that's enforced at the UI layer.
+          //   - Only the coach can create a comment authored by themselves
+          //     (coachId == auth.uid). This stops one coach from impersonating
+          //     another.
+          //   - The author can edit/delete their own comment; the club owner
+          //     can moderate any comment.
+          match /coachComments/{commentId} {
+            allow read: if hasAnyClubRole(clubId, ['owner', 'admin', 'reception']);
+            allow create: if isSignedIn()
+                          && request.resource.data.coachId == request.auth.uid;
+            allow update: if isSignedIn()
+                          && (
+                            resource.data.coachId == request.auth.uid
+                            || canManageClub(clubId)
+                          );
+            allow delete: if isSignedIn()
+                          && (
+                            resource.data.coachId == request.auth.uid
+                            || canManageClub(clubId)
+                          );
+          }
+        }
+      }
+
+      match /landingPages/{versionId} {
+        allow read: if true;
+        allow write: if canManageClub(clubId);
+      }
+
+      // Real-time biometric punch relay for Reception tab
+      match /recentBiometricPunch/{docId} {
+        allow read, write: if hasAnyClubRole(clubId, ['owner', 'admin', 'reception']);
+      }
+
+      match /accountants/{docId} {
+        allow read: if hasAnyClubRole(clubId, ['owner', 'admin', 'reception']);
+        allow write: if canManageClub(clubId);
+      }
+
+      match /memberships/{docId} {
+        allow read: if hasAnyClubRole(clubId, ['owner', 'admin', 'reception']);
+        allow write: if canManageClub(clubId);
+      }
+
+      match /payments/{docId} {
+        allow read, write: if hasAnyClubRole(clubId, ['owner', 'admin', 'reception']);
+      }
+
+      match /inventoryProducts/{docId} {
+        allow read: if hasAnyClubRole(clubId, ['owner', 'admin', 'reception', 'kitchen']);
+        allow write: if canManageClub(clubId) || hasAnyClubRole(clubId, ['kitchen']);
+      }
+
+      match /productSales/{docId} {
+        allow read: if hasAnyClubRole(clubId, ['owner', 'admin', 'reception']);
+        allow write: if hasAnyClubRole(clubId, ['owner', 'admin', 'reception']);
+      }
+
+      match /{subcollection}/{docId} {
+        // A matching broad allow overrides a narrower deny. Never include
+        // credentials, authorization grants, or finance in this fallback.
+        allow read: if !(subcollection in ['security', 'stationSecrets', 'authorizations', 'authorizationAudit', 'integrationConfig', 'integrationCodes', 'integrationLinks', 'integrationMembers', 'integrationReceipts', 'integrationContactClaims', 'payments', 'wallets']) &&
+          hasAnyClubRole(clubId, ['owner', 'admin', 'reception']);
+        allow write: if !(subcollection in ['security', 'stationSecrets', 'authorizations', 'authorizationAudit', 'integrationConfig', 'integrationCodes', 'integrationLinks', 'integrationMembers', 'integrationReceipts', 'integrationContactClaims', 'payments', 'wallets']) &&
+          canManageClub(clubId);
+      }
+    }
+
+    // ── Collection-group reads ──
+    // Enables the owner Attendance Register and Reports to query attendance
+    // across all members in a single collectionGroup("attendance") query
+    // (per-document writes stay governed by the nested
+    // clubs/{clubId}/members/{memberId}/attendance rule above).
+    match /{path=**}/attendance/{attId} {
+      // Collection-group callers must constrain clubId to their granted club.
+      allow read: if resource.data.clubId is string &&
+        hasAnyClubRole(resource.data.clubId, ['owner', 'admin', 'reception']);
+    }
+  }
+}

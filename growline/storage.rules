@@ -1,0 +1,81 @@
+rules_version = '2';
+
+/**
+ * Storage rules — deny-all, because nothing uploads yet.
+ *
+ * BUILD_PROMPT_V2 §3 puts profile photos, proof media and transformation images in
+ * Storage, and v2.1b shipped rules for all three. The rules shipped; the feature did
+ * not. There is no `storageBucket` in `src/lib/firebase.ts`, no `firebase/storage`
+ * import anywhere in `src`, no bucket on the Admin app, `npm run emulators` does not
+ * start Storage, and proof media is still a base64 data URL inside the Firestore
+ * document (D3, D33).
+ *
+ * So this is back to deny-all, for the reason D38 gave for `firestore.rules` during
+ * v2.1a: a permissive placeholder is the kind of thing that survives to production,
+ * and a deny-all cannot. `firebase.json` already points `storage` here, so this file
+ * was one `firebase deploy` from live — it was never inert.
+ *
+ * What it was granting: `allow read: if signedIn()` on /users/{userId}/proofs/, which
+ * let ANY signed-in coach read ANY other coach's evidence photos. The Firestore
+ * `proofs` rule narrows the same evidence to two people — the coach it is about and
+ * the upline who asked. The bytes were open wider than the document describing them,
+ * and the bytes are the sensitive half.
+ *
+ * The defence written above that grant ("enumeration is not possible") answered the
+ * wrong question twice. The attacker it admits is signed IN, and a signed-in client
+ * needs no token: a constructed `ref()` plus `getBytes` is the whole exploit. And the
+ * "unguessable id" was a property of upload code nobody has written — a rule must
+ * never rest on the shape of a file name that no code produces.
+ *
+ * ## What the real rules need, so this is not re-derived wrongly
+ *
+ * Storage rules cannot `get()` a Firestore document. "The upline who asked" is not a
+ * fact available here; `request.auth.uid`, the object metadata and the path are. And
+ * metadata is a dead end — the uploading client sets it, and `updateMetadata` is
+ * itself a write, so an owner could rewrite their own grant afterwards. So the
+ * identities the rule has to compare must live IN the path:
+ *
+ *   users/{uid}/profile/{fileName}           public read · owner write · image · 5 MB
+ *   users/{uid}/transformations/{fileName}   public read · owner write · image · 8 MB
+ *   proofs/{coachId}/{reviewerId}/{rest=**}  read: those two uids · write: coachId
+ *
+ * The public two keep the uid in the path because that is what makes the WRITE rule
+ * enforceable. A uid is not a capability, and those files ride on the public report
+ * card (F3) and portfolio (F9) by design.
+ *
+ * Proof media leaves `users/{uid}/` deliberately. Two of that prefix's three children
+ * are world-readable, and one private folder inside a mostly-public prefix is exactly
+ * how a future convenience rule — `match /users/{userId}/{allPaths=**}` with
+ * `allow read: if true` — swallows evidence photos by accident. Splitting by
+ * sensitivity at the top level means a mistake in the public branch cannot reach them.
+ *
+ * `proofs/{coachId}/{reviewerId}/…` reproduces the Firestore predicate with path
+ * segments instead of a lookup: a proof's `coachId` and `requestedById` never change
+ * after `requestProof` writes them, so a path built from that pair stays correct for
+ * the life of the object. `{rest=**}` is there so the resize Function's derivative
+ * matches too — a thumbnail no rule covers means the gallery serves originals, which
+ * is the download egress §3 names as the dominant cost. The server hands the client
+ * the path (it already owns proof authorization — D32), and the write rule still
+ * checks `uid == coachId`, so a client that lies about the path cannot plant evidence
+ * in someone else's folder.
+ *
+ * Land that in the SAME change as `storageBucket`, the uploader, and rules tests:
+ * `initializeTestEnvironment` takes a `storage` block, so `e2e/rules.test.ts` can
+ * finally assert "a coach outside the exchange cannot read the proof" — the day there
+ * is a proof to read. Until then nothing needs a grant here. The size and contentType
+ * bounds that were here were the genuinely useful part, and they lose nothing by
+ * landing alongside the uploader that has to satisfy them.
+ *
+ * D33's EXIF re-encode stays a client-side guarantee in `image-client.ts` either way
+ * (P4). Rules cannot inspect EXIF, and that does not change when Storage arrives.
+ */
+service firebase.storage {
+  match /b/{bucket}/o {
+
+    // Nothing at all, until something in the app uploads. The note above says what
+    // replaces this and what has to land in the same change.
+    match /{allPaths=**} {
+      allow read, write: if false;
+    }
+  }
+}

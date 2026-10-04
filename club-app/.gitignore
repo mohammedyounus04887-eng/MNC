@@ -1,0 +1,38 @@
+# Logs
+logs
+*.log
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+pnpm-debug.log*
+lerna-debug.log*
+
+node_modules
+dist
+dist-map/
+dist-ssr
+*.local
+
+# Editor directories and files
+.vscode/*
+!.vscode/extensions.json
+.idea
+.DS_Store
+*.suo
+*.ntvs*
+*.njsproj
+*.sln
+*.sw?
+
+# Claude Code worktrees
+.claude/worktrees/
+
+# Firebase CLI deploy cache — local mtimes and hashes, regenerated on every
+# deploy. Tracking it made each deploy produce a few hundred lines of churn that
+# mean nothing on any other machine.
+.firebase/
+
+# Staging runtime profiles must never be committed.
+.env.staging.local
+functions/.env.*
+!functions/.env.example

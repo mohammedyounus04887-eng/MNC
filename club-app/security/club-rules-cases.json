@@ -1,0 +1,28 @@
+{
+  "description": "Required emulator cases for the Club authorization model",
+  "claims": {
+    "ownerA": { "uid": "owner-a", "clubId": "club-a", "role": "owner" },
+    "receptionA": { "uid": "reception-a", "clubId": "club-a", "role": "reception", "station": true },
+    "kitchenA": { "uid": "kitchen-a", "clubId": "club-a", "role": "kitchen", "station": true },
+    "tvA": { "uid": "tv-a", "clubId": "club-a", "role": "tv", "station": true },
+    "memberA": { "uid": "member-a", "clubId": "club-a", "role": "member" },
+    "ownerB": { "uid": "owner-b", "clubId": "club-b", "role": "owner" },
+    "platform": { "uid": "platform-a", "platformAdmin": true }
+  },
+  "firestore": [
+    { "name": "owner manages own club", "actor": "ownerA", "path": "clubs/club-a/menu/m", "operation": "write", "allow": true },
+    { "name": "station reads own club", "actor": "receptionA", "path": "clubs/club-a/products/p", "operation": "read", "allow": true },
+    { "name": "wrong club denied", "actor": "receptionA", "path": "clubs/club-b/products/p", "operation": "read", "allow": false },
+    { "name": "wrong role cannot manage", "actor": "memberA", "path": "clubs/club-a/menu/m", "operation": "write", "allow": false },
+    { "name": "anonymous privileged access denied", "actor": null, "path": "clubs/club-a/wallets/w", "operation": "write", "allow": false },
+    { "name": "PIN document is never public", "actor": "memberA", "path": "clubs/club-a/stationSecrets/reception", "operation": "read", "allow": false },
+    { "name": "platform admin can manage", "actor": "platform", "path": "clubs/club-a/menu/m", "operation": "write", "allow": true },
+    { "name": "ordinary owner cannot platform records", "actor": "ownerA", "path": "superAdmins/platform-a", "operation": "write", "allow": false }
+  ],
+  "storage": [
+    { "name": "station reads own club asset", "actor": "tvA", "path": "clubs/club-a/tv/screen.json", "operation": "read", "allow": true },
+    { "name": "cross club storage denied", "actor": "tvA", "path": "clubs/club-b/tv/screen.json", "operation": "read", "allow": false },
+    { "name": "member cannot write arbitrary storage", "actor": "memberA", "path": "clubs/club-a/private/x", "operation": "write", "allow": false },
+    { "name": "owner can write club storage", "actor": "ownerA", "path": "clubs/club-a/private/x", "operation": "write", "allow": true }
+  ]
+}

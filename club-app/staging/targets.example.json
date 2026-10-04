@@ -1,0 +1,9 @@
+{
+  "environment": "staging",
+  "appHostingEnvironment": "staging",
+  "clubProjectId": "",
+  "growlineProjectId": "",
+  "clubOrigin": "",
+  "growlineOrigin": "",
+  "growlineBackendId": ""
+}

@@ -1,0 +1,172 @@
+name: CI
+
+# Everything here already existed as an npm script and ran only when somebody
+# remembered. That is the gap this closes: 21 e2e tests and 43 Security Rules checks
+# are worth nothing as a safety net if they are optional. BUILD_PROMPT_V2 §5.7 makes
+# the rules test MANDATORY, and "mandatory" has to mean a machine enforces it.
+#
+# One job, not several. The suites share a Firebase emulator and a seeded database, so
+# splitting them across jobs would mean booting and seeding twice to save no wall
+# clock. Every step blocks the merge — there is no advisory step here, because a check
+# nobody has to pass is a check nobody reads.
+
+on:
+  push:
+    branches: ["**"]
+  pull_request:
+
+# A second push to the same branch makes the first run irrelevant.
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  verify:
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+
+    env:
+      # NEXT_PUBLIC_* values are INLINED AT BUILD TIME, so they must be set before the
+      # build step, not just before the tests. Getting this wrong produces a build that
+      # talks to a real project while the server talks to the emulator — the exact
+      # silent failure .env.example warns about, where nothing errors and the realtime
+      # row simply never arrives.
+      NEXT_PUBLIC_FIREBASE_PROJECT_ID: growline-dev
+      NEXT_PUBLIC_FIREBASE_API_KEY: fake-api-key
+      NEXT_PUBLIC_FIREBASE_AUTH_DOMAIN: growline-dev.firebaseapp.com
+      NEXT_PUBLIC_FIREBASE_APP_ID: 1:0:web:0
+      NEXT_PUBLIC_FIREBASE_AUTH_EMULATOR_HOST: 127.0.0.1:9099
+      NEXT_PUBLIC_FIRESTORE_EMULATOR_HOST: 127.0.0.1:8080
+      FIRESTORE_EMULATOR_HOST: 127.0.0.1:8080
+      FIREBASE_AUTH_EMULATOR_HOST: 127.0.0.1:9099
+      NEXT_PUBLIC_SITE_URL: http://127.0.0.1:3000
+      # Legacy SQLite, still the migration script's source until the cutover completes.
+      DATABASE_URL: file:./dev.db
+      SESSION_SECRET: ci-not-a-secret
+      # Throwaway webhook key tests that even a signed request cannot bypass the
+      # disabled free-coach payment boundary. Pure unit tests retain HMAC validation.
+      #
+      # The other four RAZORPAY_* vars stay unset on purpose, so `isConfigured()` is
+      # false. That is the state this server is in before launch, and it is what makes
+      # the "subscribing says payments are off" test test something: with all five set,
+      # CI would try to reach api.razorpay.com and the 503 assertion would vanish.
+      RAZORPAY_WEBHOOK_SECRET: ci-not-a-razorpay-secret
+      # FIREBASE_SERVICE_ACCOUNT is deliberately UNSET. Both emulator hosts are set, so
+      # the boot guard (D45) requires the credential to be absent — setting it here
+      # would make the app refuse to start, which is the guard working correctly.
+      #
+      # The VAPID keys are also deliberately unset: `isPushConfigured()` then returns
+      # false and the push fan-out is skipped, so CI never tries to deliver a real
+      # notification. If push logic ever needs covering, it needs a fake, not a key.
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+
+      # The Firestore emulator is a Java process. ubuntu-latest ships a JDK, but
+      # pinning it means an image change cannot break the build silently.
+      #
+      # 21, not 17. firebase-tools 15 refuses to start the emulators on anything older:
+      #
+      #   Error: firebase-tools no longer supports Java version before 21.
+      #
+      # Nobody had seen that message because the job had never reached this step — it
+      # died at typecheck long before booting an emulator. The pin was written when 17
+      # was current and the tooling moved underneath it, which is the failure mode a pin
+      # trades for: it cannot break silently, but it does go stale silently.
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "21"
+
+      - run: npm ci
+
+      # --- Code generation, BEFORE the first typecheck
+      #
+      # Three files in this repo are generated, not committed, and `tsc --noEmit` reads
+      # all three. Without these steps the very first check fails in about forty
+      # seconds with errors that describe nothing a contributor wrote:
+      #
+      #   src/app/layout.tsx        TS2304  Cannot find name 'LayoutProps'
+      #   scripts/seed-sqlite.ts    TS2307  Cannot find module '../src/generated/prisma/client'
+      #   scripts/migrate-*.ts      TS7006  Parameter implicitly has an 'any' type
+      #
+      # That is exactly what CI had been doing on every commit — so the job never
+      # reached the build, the seven Security Rules suites, or a single e2e test. The
+      # workflow's own comment says every step blocks the merge and there is no
+      # advisory step here; that was true and useless, because the gate fell over
+      # before it gated anything. Same failure a fresh `git clone && npm ci` hits.
+      #
+      # `next typegen` writes the route/layout types `next build` would otherwise
+      # produce, and typecheck runs before build on purpose (a typo should fail in
+      # seconds, not after a bundle). `prisma generate` needs DATABASE_URL, which is
+      # set at job level above.
+      - run: npx prisma generate
+      - run: npx next typegen
+
+      # The SQLite schema the migration script reads. `e2e:reset` seeds this database
+      # inside ci-integration.sh, and the seed cannot create its own tables — an empty
+      # dev.db fails with P2021 `main.proofs does not exist`. Nothing else applies the
+      # migrations: no postinstall, no committed .db file.
+      - run: npx prisma migrate deploy
+
+      # --- Cheap and fast first: these need no services, so a typo fails in seconds
+      - run: npm run typecheck
+      - run: npm run lint
+      - run: npm run test:unit
+      - run: node --test staging/verify.test.mjs
+
+      # The Cloud Functions are their own package with their own tsconfig, so the root
+      # typecheck never sees them. Until this step existed, nothing would have caught a
+      # compile error in the retention purge before deploy (STATUS.md bug #6) — and that
+      # package contains the one job that irreversibly deletes user data.
+      - run: npm ci
+        working-directory: functions
+      - run: npm run typecheck
+        working-directory: functions
+      - run: npm run build
+        working-directory: functions
+
+      - run: npm run build
+
+      # --- Browser for the e2e suite
+      #
+      # playwright.config.ts resolves Chromium per machine: PW_CHROMIUM_PATH, then a
+      # container path, then the installed Chrome channel. Setting the explicit path is
+      # what stops CI depending on whichever Chrome the runner image happens to carry.
+      - run: npx playwright install --with-deps chromium
+      - name: Resolve the Chromium path for playwright.config
+        run: |
+          PW_PATH="$(node -e "console.log(require('playwright-core').chromium.executablePath())")"
+          test -x "$PW_PATH" || { echo "Chromium not executable at: $PW_PATH"; exit 1; }
+          echo "PW_CHROMIUM_PATH=$PW_PATH" >> "$GITHUB_ENV"
+          echo "Using Chromium at $PW_PATH"
+
+      # --- Everything that needs the emulators
+      #
+      # `emulators:exec` boots auth and firestore, runs the script, then tears them
+      # down and fails the job on a non-zero exit. The seeding, the rules tests and the
+      # e2e run all live inside that one lifetime because they share the instance.
+      - name: Integration suites against the Firebase emulators
+        run: >
+          npx firebase emulators:exec
+          --only auth,firestore
+          --project growline-dev
+          "bash .github/scripts/ci-integration.sh"
+
+      # Traces and screenshots are the only way to diagnose a failure that does not
+      # reproduce locally — which, on this project, has been most of them.
+      - name: Upload Playwright artefacts
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: playwright-results
+          path: |
+            test-results/
+            playwright-report/
+          retention-days: 7
+          if-no-files-found: ignore

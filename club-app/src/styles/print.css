@@ -1,0 +1,39 @@
+/*
+ * THERMAL PRINTER SETUP NOTES (TVS RP3160 Gold — 80mm):
+ * 1. Go to Windows Settings → Printers & Scanners
+ * 2. Set TVS RP3160 as default printer
+ * 3. Printer Properties → Paper size: 80mm x Continuous (roll paper)
+ * 4. In browser print dialog:
+ *    - Margins: set to "None" or minimum
+ *    - Scale: 100% (do NOT fit to page)
+ *    - Headers/footers: OFF
+ *    - Background graphics: OFF (thermal = black only)
+ * 5. Paper will auto-feed 8 blank lines at bottom
+ */
+
+@media print {
+
+    /* Hide all screen content */
+    body>* {
+        visibility: hidden;
+    }
+
+    /* Show only the receipt area */
+    #receipt-print-area,
+    #receipt-print-area * {
+        visibility: visible;
+    }
+
+    #receipt-print-area {
+        position: fixed;
+        left: 0;
+        top: 0;
+        width: 80mm;
+    }
+
+    /* Remove browser-added page headers/footers & margins */
+    @page {
+        margin: 0;
+        size: 80mm auto;
+    }
+}

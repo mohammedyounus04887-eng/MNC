@@ -1,0 +1,40 @@
+{
+  "functions": {
+    "source": "functions",
+    "predeploy": [
+      "node staging/verify.mjs",
+      "npm --prefix \"$RESOURCE_DIR\" run build"
+    ]
+  },
+  "firestore": {
+    "rules": "firestore.rules",
+    "indexes": "firestore.indexes.json",
+    "predeploy": [
+      "node staging/verify.mjs"
+    ]
+  },
+  "storage": {
+    "rules": "storage.rules",
+    "predeploy": [
+      "node staging/verify.mjs"
+    ]
+  },
+  "hosting": {
+    "public": "dist",
+    "ignore": [
+      "firebase.json",
+      "**/.*",
+      "**/node_modules/**"
+    ],
+    "rewrites": [
+      {
+        "source": "**",
+        "destination": "/index.html"
+      }
+    ],
+    "predeploy": [
+      "node staging/verify.mjs",
+      "npm run build -- --mode staging"
+    ]
+  }
+}

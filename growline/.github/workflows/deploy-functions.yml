@@ -1,0 +1,141 @@
+name: Deploy Background Jobs
+
+# The nine Cloud Functions, as a button.
+#
+# Sibling of `deploy-rules.yml` and deliberately a SEPARATE workflow, because the two
+# need very different authority and mixing them would mean the rules deploy carried
+# permissions it never uses.
+#
+# ## Read this before creating the credential
+#
+# A Cloud Functions Gen 2 deploy is not one API call. firebase-tools uploads source to a
+# bucket, Cloud Build builds a container, Artifact Registry stores it, Cloud Run hosts
+# it, Eventarc wires the Firestore trigger, Cloud Scheduler creates eight cron jobs, and
+# Secret Manager binds CRON_SECRET. The service account needs a role for each:
+#
+#   roles/firebase.admin              roles/cloudfunctions.admin
+#   roles/run.admin                   roles/cloudbuild.builds.editor
+#   roles/artifactregistry.admin      roles/eventarc.admin
+#   roles/cloudscheduler.admin        roles/iam.serviceAccountUser
+#   roles/secretmanager.admin         roles/storage.admin
+#
+# That is a great deal more standing authority than the two roles `deploy-rules.yml`
+# asks for, and this repository is public. GitHub does not expose secrets to forked-PR
+# workflows and `workflow_dispatch` requires write access, so it is defensible — but it
+# is a real decision, not a formality.
+#
+# **For the FIRST deploy, prefer running it yourself:**
+#
+#     npx firebase login
+#     npx firebase deploy -P prod --only functions
+#
+# An interactive login lasts an hour and leaves nothing behind. This workflow earns its
+# keep from the second deploy onward, when the alternative is being at a laptop every
+# time a scheduled job changes.
+#
+# ## Two things must exist first, or the deploy fails or does nothing
+#
+# 1. **CRON_SECRET in Secret Manager.** Seven of the nine declare `secrets:
+#    ["CRON_SECRET"]`. A secret reference that cannot resolve fails the WHOLE deploy.
+#        firebase functions:secrets:set CRON_SECRET --project grow--line
+#
+# 2. **SITE_URL in `functions/.env.grow--line`.** Those same seven call the app's own
+#    HTTP routes and return immediately when it is unset — deploying healthy, running on
+#    schedule, and doing nothing. See `functions/.env.example`. This workflow checks for
+#    it and warns rather than failing, because the two Firestore-native functions
+#    (`onDailyLogWritten`, `purgeStaleHealthData`) are worth deploying without it.
+
+on:
+  workflow_dispatch:
+    inputs:
+      project:
+        description: "Firebase project alias from .firebaserc"
+        required: true
+        default: "prod"
+        type: string
+      only:
+        description: "Limit to specific functions, e.g. functions:onDailyLogWritten. Blank deploys all nine."
+        required: false
+        default: ""
+        type: string
+
+concurrency:
+  group: deploy-functions-${{ inputs.project }}
+  cancel-in-progress: false
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+
+      - name: Check the credential exists before doing anything else
+        env:
+          SA: ${{ secrets.FIREBASE_SERVICE_ACCOUNT }}
+        run: |
+          if [ -z "$SA" ]; then
+            echo "::error::FIREBASE_SERVICE_ACCOUNT is not set."
+            echo "Add it under Settings → Secrets and variables → Actions."
+            echo "See this workflow's header for the ten roles a functions deploy needs —"
+            echo "it is a much broader credential than the rules deploy uses."
+            exit 1
+          fi
+          echo "Credential present."
+
+      # Warn, do not fail. The two Firestore-native functions work without SITE_URL, and
+      # onDailyLogWritten is the one keeping the team tree's activity numbers current —
+      # worth shipping on its own.
+      - name: Check SITE_URL is configured for the seven HTTP-calling jobs
+        run: |
+          f="functions/.env.${{ inputs.project == 'prod' && 'grow--line' || 'growline-dev' }}"
+          if [ ! -f "$f" ] || ! grep -qE '^SITE_URL=\S' "$f"; then
+            echo "::warning::SITE_URL is not set in $f."
+            echo "The seven jobs that call the app's HTTP routes will deploy, report healthy,"
+            echo "run on schedule, and return immediately without doing anything."
+            echo "onDailyLogWritten and purgeStaleHealthData are unaffected."
+            echo "See functions/.env.example."
+          else
+            echo "SITE_URL configured: $(grep -E '^SITE_URL=' "$f")"
+          fi
+
+      - run: npm ci
+
+      # Typecheck before uploading. `firebase deploy` runs this as a predeploy hook too,
+      # but failing here costs seconds instead of failing after a container build.
+      - name: Build the functions package
+        run: npm --prefix functions ci && npm --prefix functions run build
+
+      - name: Write the credential to a file the CLI can read
+        env:
+          SA: ${{ secrets.FIREBASE_SERVICE_ACCOUNT }}
+        run: |
+          printf '%s' "$SA" > "$RUNNER_TEMP/sa.json"
+          chmod 600 "$RUNNER_TEMP/sa.json"
+
+      - name: Show what is about to change
+        run: |
+          echo "Project alias : ${{ inputs.project }}"
+          echo "Scope         : ${{ inputs.only == '' && 'functions (all nine)' || inputs.only }}"
+          echo "Commit        : ${{ github.sha }}"
+          echo "--- exported functions ---"
+          grep -hE "^export (const|\{)" functions/src/*.ts
+
+      - name: Deploy
+        env:
+          GOOGLE_APPLICATION_CREDENTIALS: ${{ runner.temp }}/sa.json
+        run: |
+          npx firebase deploy \
+            -P "${{ inputs.project }}" \
+            --only "${{ inputs.only == '' && 'functions' || inputs.only }}" \
+            --non-interactive
+
+      - name: Remove the credential
+        if: always()
+        run: rm -f "$RUNNER_TEMP/sa.json"

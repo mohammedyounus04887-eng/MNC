@@ -1,0 +1,41 @@
+name: Verify Club
+
+on:
+  push:
+    branches: ["**"]
+  pull_request:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: club-ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  verify:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "21"
+      - run: npm ci
+      - run: npm --prefix functions ci
+      - run: npm run typecheck
+      - run: npx tsc -p tsconfig.node.json --noEmit
+      - run: node --test scripts/messaging-config.test.mjs staging/verify.test.mjs
+      - run: npm test
+      - run: npm --prefix functions run build
+      - run: npm run build
+      - run: npm run test:security
+      - run: npm run test:workflow-harness
+      - run: npm run test:handoff-state
+      - run: npx firebase emulators:exec --config firebase.handoff.json --project demo-club-owner --only firestore "node --test functions/test/ownerActivity.test.mjs functions/test/federation.test.mjs"
+      - run: node --test security/integration-boundary.test.mjs

@@ -1,0 +1,127 @@
+<!doctype html>
+<html lang="en">
+
+<head>
+  <meta charset="UTF-8" />
+
+  <!-- Viewport — critical for PWA rotation support -->
+  <meta name="viewport" content="width=device-width,
+                 initial-scale=1.0,
+                 minimum-scale=1.0,
+                 maximum-scale=1.0,
+                 viewport-fit=cover" />
+
+  <!-- PWA capable -->
+  <meta name="mobile-web-app-capable" content="yes" />
+  <meta name="format-detection" content="telephone=no" />
+
+  <!-- iOS PWA tags -->
+  <meta name="apple-mobile-web-app-capable" content="yes" />
+  <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
+  <meta name="apple-mobile-web-app-title" content="MNC" />
+
+  <!-- Warm the connections the first screen needs before it asks for them.
+       Every one of these costs a DNS lookup plus a TLS handshake on a phone,
+       and doing them up front overlaps that cost with parsing this file
+       instead of paying it in series afterwards. -->
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+  <link rel="preconnect" href="https://firestore.googleapis.com" crossorigin />
+  <link rel="preconnect" href="https://identitytoolkit.googleapis.com" crossorigin />
+
+  <!-- Nunito. This lived as an @import at the top of index.css, which meant the
+       browser could not even start fetching it until index.css had downloaded
+       and been parsed. Here it starts immediately, and display=swap means text
+       is readable in the club's own font a moment later rather than invisible
+       until it arrives. -->
+  <link rel="stylesheet"
+    href="https://fonts.googleapis.com/css2?family=Nunito:ital,wght@0,200..1000;1,200..1000&display=swap" />
+
+  <title>Magic Nutrition Club – Usha Prasad Enterprise</title>
+  <meta name="description"
+    content="Premium health and wellness community transformation. Join Magic Nutrition Club for a journey towards a better life." />
+  <meta name="author" content="Usha Prasad Enterprise" />
+
+  <!-- Dynamic PWA Manifest — serve correct manifest per route -->
+  <!-- Kitchen (/kitchen) → landscape manifest -->
+  <!-- Reception (/reception) → landscape manifest -->
+  <!-- Everything else → default any-orientation manifest -->
+  <script>
+    (function () {
+      var path = window.location.pathname;
+      var manifest = '/manifest.webmanifest';
+      if (path.startsWith('/kitchen')) {
+        manifest = '/manifest-kitchen.json';
+      } else if (path.startsWith('/reception')) {
+        manifest = '/manifest-reception.json';
+      }
+      var link = document.createElement('link');
+      link.rel = 'manifest';
+      link.href = manifest;
+      document.head.appendChild(link);
+    })();
+  </script>
+
+  <!-- PWA tags -->
+  <link rel="apple-touch-icon" href="/apple-touch-icon.png" />
+  <meta name="theme-color" content="#2d9653" />
+
+  <!-- Leaf Favicon -->
+  <link rel="icon" type="image/svg+xml"
+    href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='%2366BB6A'%3E%3Cpath d='M17,8C8,10 5.9,16.17 3.82,21.34L5.71,22L6.66,19.7C7.14,19.87 7.64,20 8,20C19,20 22,3 22,3C21,5 14,5.25 9,6.25C4,7.25 2,11.5 2,13.5C2,15.5 3.75,17.25 3.75,17.25C7,8 17,8 17,8Z' /%3E%3C/svg%3E" />
+
+  <meta property="og:title" content="Magic Nutrition Club" />
+  <meta property="og:description" content="Experience a premium wellness transformation with Usha Prasad Enterprise." />
+  <meta property="og:type" content="website" />
+  <meta property="og:image" content="/og-image.png" />
+
+  <meta name="twitter:card" content="summary_large_image" />
+
+  <!-- Landscape CSS for Kitchen and Reception — CSS rotate trick -->
+  <!-- Forces landscape layout when device is physically in portrait -->
+  <style>
+    /* Kitchen and Reception: always fill screen in landscape */
+    .kitchen-landscape-root,
+    .reception-landscape-root {
+      width: 100vw;
+      min-height: 100vh;
+      overflow-x: hidden;
+      position: relative;
+    }
+
+    /* Rotate prompt — shown in portrait on iOS (where CSS rotate is unreliable) */
+    .landscape-rotate-prompt {
+      display: none;
+      position: fixed;
+      inset: 0;
+      background: #1a3a2a;
+      z-index: 9999;
+      flex-direction: column;
+      align-items: center;
+      justify-content: center;
+      color: white;
+      font-family: 'Nunito', sans-serif;
+      text-align: center;
+      padding: 32px;
+    }
+
+    @media (orientation: portrait) {
+      .landscape-rotate-prompt {
+        display: flex !important;
+      }
+    }
+
+    @media (orientation: landscape) {
+      .landscape-rotate-prompt {
+        display: none !important;
+      }
+    }
+  </style>
+</head>
+
+<body>
+  <div id="root"></div>
+  <script type="module" src="/src/main.tsx"></script>
+</body>
+
+</html>
